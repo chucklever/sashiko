@@ -115,9 +115,9 @@ Settings for the OpenAI providers (`provider = "openai"` or `provider = "openai-
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `base_url` | string | -- | API endpoint URL. |
-| `context_window_size` | integer | -- | Context window size (optional). |
-| `max_tokens` | integer | -- | Max output tokens (optional). |
+| `base_url` | string | model-derived | API endpoint URL. Derived from the model name, `https://api.openai.com/v1/chat/completions` for anything unrecognized. |
+| `context_window_size` | integer | model-derived | Context window size. `128000` for most models. |
+| `max_tokens` | integer | `4096` | Max output tokens per response. With `provider = "openai"` it is sent as `max_completion_tokens`, which bounds reasoning tokens as well as the reply. |
 
 #### `[ai.kiro_cli]`
 

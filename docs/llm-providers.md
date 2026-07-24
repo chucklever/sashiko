@@ -240,6 +240,10 @@ subscription -- no per-token charge, no API key.
 cp docs/examples/Settings.codex-cli.toml Settings.toml
 ```
 
+For OpenAI's coding-optimized model, use
+`docs/examples/Settings.gpt-5-codex.toml` instead (same backend,
+`model = "gpt-5-codex"`).
+
 **What you get:**
 
 - Runs `codex exec --json --sandbox read-only` as a stateless backend
@@ -377,3 +381,8 @@ base_url = "https://api.orcarouter.ai/v1"
 context_window_size = 128000
 max_tokens = 16384
 ```
+
+For OpenAI's own API with an API key (rather than a self-hosted
+compatible endpoint), use `docs/examples/Settings.openai-api.toml`:
+set `provider = "openai"`, `model = "gpt-5.6-sol"`, and export
+`OPENAI_API_KEY`.
