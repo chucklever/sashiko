@@ -33,7 +33,8 @@ use tokio::process::Command;
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
-use super::claude_cli::{build_prompt, log_and_redact_stderr, parse_inner_response};
+use super::claude_cli::log_and_redact_stderr;
+use super::cli_common::{build_prompt, parse_inner_response};
 use crate::ai::{AiProvider, AiRequest, AiResponse, ProviderCapabilities};
 
 pub struct DevinCliProvider {
@@ -135,7 +136,7 @@ impl AiProvider for DevinCliProvider {
             warn!("devin-cli produced empty stdout");
         }
 
-        parse_inner_response(&raw, None)
+        parse_inner_response("devin-cli", &raw, None)
     }
 
     fn get_capabilities(&self) -> ProviderCapabilities {
