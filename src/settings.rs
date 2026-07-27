@@ -318,6 +318,20 @@ pub struct ClaudeCliSettings {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 #[allow(unused)]
+pub struct CodexCliSettings {
+    /// Reasoning effort passed as `codex exec -c model_reasoning_effort=<v>`.
+    /// Valid values: "none", "minimal", "low", "medium", "high", "xhigh",
+    /// "max". Leave unset for the account default. A `-c` override outranks
+    /// `~/.codex/config.toml`, but not an enterprise-managed requirements
+    /// layer, which substitutes its own value whatever the origin. A run
+    /// whose effort that layer substitutes fails.
+    #[serde(default)]
+    pub effort: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+#[allow(unused)]
 pub struct DevinCliSettings {
     /// Path to a Devin declarative agent config file (JSON or YAML) passed via
     /// `--agent-config`. Use this to disable all tools for a strictly
@@ -367,6 +381,7 @@ pub struct AiSettings {
     pub vllm: Option<VllmSettings>,
     pub kiro_cli: Option<KiroCliSettings>,
     pub claude_cli: Option<ClaudeCliSettings>,
+    pub codex_cli: Option<CodexCliSettings>,
     pub devin_cli: Option<DevinCliSettings>,
 }
 

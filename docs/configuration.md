@@ -101,6 +101,14 @@ Settings for the Claude Code CLI provider (`provider = "claude-cli"`).
 |-----|------|---------|-------------|
 | `effort` | string | -- | Thinking effort: `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`. |
 
+#### `[ai.codex_cli]`
+
+Settings for the Codex CLI provider (`provider = "codex-cli"`).
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `effort` | string | -- | Reasoning effort: `"none"`, `"minimal"`, `"low"`, `"medium"`, `"high"`, `"xhigh"`, `"max"`. Passed as `-c model_reasoning_effort=<effort>`, which outranks `~/.codex/config.toml` but not an enterprise-managed requirements layer. A run whose effort that layer substitutes fails. |
+
 #### `[ai.gemini]`
 
 Settings for the Gemini provider (`provider = "gemini"`).
