@@ -32,7 +32,7 @@ use tokio::sync::Mutex;
 use tokio::time::timeout;
 use tracing::debug;
 
-use super::claude_cli::{build_prompt, parse_inner_response};
+use super::cli_common::{build_prompt, parse_inner_response};
 use super::token_budget::TokenBudget;
 use crate::ai::{AiProvider, AiRequest, AiResponse, AiUsage, ProviderCapabilities};
 use crate::utils::redact_secret;
@@ -411,7 +411,7 @@ impl AiProvider for KiroCliProvider {
             cached_tokens: None,
         });
 
-        parse_inner_response(&text, usage)
+        parse_inner_response("kiro-cli", &text, usage)
     }
 
     fn estimate_tokens(&self, request: &AiRequest) -> usize {
@@ -604,35 +604,6 @@ mod tests {
             }
         });
         assert!(extract_acp_text_chunk(&input).is_none());
-    }
-
-    #[test]
-    fn test_parse_tool_calls_json() {
-        let text = r#"{"tool_calls":[{"id":"c1","function_name":"read_file","arguments":{"path":"README.md"}}]}"#;
-        let resp = parse_inner_response(text, None).unwrap();
-        assert!(resp.tool_calls.is_some());
-        let calls = resp.tool_calls.unwrap();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0].function_name, "read_file");
-        assert_eq!(calls[0].arguments["path"], "README.md");
-    }
-
-    #[test]
-    fn test_parse_plain_content() {
-        let text = r#"{"content":"No issues found in this patch."}"#;
-        let resp = parse_inner_response(text, None).unwrap();
-        assert_eq!(
-            resp.content.as_deref(),
-            Some("No issues found in this patch.")
-        );
-        assert!(resp.tool_calls.is_none());
-    }
-
-    #[test]
-    fn test_parse_raw_text_fallback() {
-        let text = "This is not JSON at all.";
-        let resp = parse_inner_response(text, None).unwrap();
-        assert_eq!(resp.content.as_deref(), Some(text));
     }
 
     #[test]

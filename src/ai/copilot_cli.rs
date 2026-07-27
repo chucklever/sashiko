@@ -31,7 +31,7 @@ use tokio::process::Command;
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
-use super::claude_cli::{build_prompt, parse_inner_response};
+use super::cli_common::{build_prompt, parse_inner_response};
 use crate::ai::{AiProvider, AiRequest, AiResponse, AiUsage, ProviderCapabilities};
 
 pub struct CopilotCliProvider {
@@ -192,7 +192,7 @@ pub fn parse_jsonl_events(raw: &str) -> Result<AiResponse> {
 
     // If we captured structured content, try to parse it for tool calls
     if let Some(text) = &content {
-        return parse_inner_response(text, usage);
+        return parse_inner_response("copilot-cli", text, usage);
     }
 
     // No assistant.message events found — return empty
