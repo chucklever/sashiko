@@ -116,9 +116,14 @@ effort = "high"                    # "low", "medium", "high"
 
 ## Testing
 
-Tests are in `src/ai/claude.rs` and `src/ai/claude_cli.rs`:
+Tests are in `src/ai/claude.rs`:
 - ThinkingConfig serialization (omitted when both None, present when set)
 - Request translation (system, user, assistant, tool calls, tool results)
 - Response translation (text, tool calls, thinking, usage with cache)
 - Cache control (applied when enabled, absent when disabled)
+
+The prompt builder and response parser the CLI provider uses live in
+`src/ai/cli_common.rs`, shared with the other CLI-backed providers, and are
+tested there:
 - `build_prompt()` format instructions (with/without tools, with/without JSON format)
+- `parse_inner_response()` tool calls, plain content, raw-text fallback
