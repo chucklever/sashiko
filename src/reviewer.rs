@@ -1416,14 +1416,17 @@ impl Reviewer {
                                                     "Failed to queue email for patch {}/{} (ID: {}): {}",
                                                     patchset_id, index, patch_id, e
                                                 );
-                                                db_success = false;
                                             }
                                         }
                                     }
                                 }
                                 if !db_success {
+                                    let _ = ctx.db.update_patch_status(patch_id, "Failed").await;
                                     return Ok(PatchResult::ReviewFailed);
                                 }
+                                // Failing the patchset over a notification
+                                // would strand it: get_pending_patchsets()
+                                // selects only Pending rows.
                                 let _ = ctx.db.update_patch_status(patch_id, "Reviewed").await;
                                 return Ok(PatchResult::Success);
                             } else if ctx.settings.ai.no_ai {
