@@ -533,6 +533,20 @@ impl AiProvider for BedrockClient {
             context_window_size: self.context_window_size,
         }
     }
+
+    fn cache_identity(&self) -> String {
+        // max_tokens is what truncates a response, so a raised limit has to
+        // miss the entry recorded under the lower one rather than replay it.
+        let max_tokens = self.max_tokens.to_string();
+        crate::ai::cache_identity_with(
+            &self.model_id,
+            &[
+                ("thinking", self.thinking.as_deref()),
+                ("effort", self.effort.as_deref()),
+                ("max_tokens", Some(max_tokens.as_str())),
+            ],
+        )
+    }
 }
 
 #[cfg(test)]
