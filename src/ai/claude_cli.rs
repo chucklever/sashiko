@@ -29,10 +29,11 @@ use serde_json::Value;
 use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
-use tokio::time::timeout;
 use tracing::debug;
 
-use super::cli_common::{CliIoError, build_prompt, parse_inner_response, write_prompt_and_wait};
+use super::cli_common::{
+    CliIoError, IDLE_TIMEOUT, build_prompt, parse_inner_response, spawn_cli, write_prompt_and_wait,
+};
 use crate::ai::{
     AiErrorClass, AiProvider, AiRequest, AiResponse, AiUsage, ClassifyAiError,
     ProviderCapabilities, cache_identity_with,
@@ -43,8 +44,8 @@ use crate::utils::utf8_prefix;
 pub enum ClaudeCliError {
     #[error("Failed to spawn claude CLI: {0}")]
     Spawn(String),
-    #[error("claude CLI timed out after 10 minutes")]
-    Timeout,
+    #[error("claude CLI produced no output for {0}s")]
+    Timeout(u64),
     #[error("claude CLI wait error: {0}")]
     Wait(String),
     #[error("claude CLI stdin write failed: {0}")]
@@ -59,7 +60,7 @@ impl ClassifyAiError for ClaudeCliError {
     fn ai_error_class(&self) -> AiErrorClass {
         match self {
             ClaudeCliError::Spawn(_) => AiErrorClass::Fatal,
-            ClaudeCliError::Timeout => AiErrorClass::Transient {
+            ClaudeCliError::Timeout(_) => AiErrorClass::Transient {
                 retry_after: Duration::from_secs(30),
             },
             ClaudeCliError::Wait(_) => AiErrorClass::Transient {
@@ -101,28 +102,27 @@ impl AiProvider for ClaudeCliProvider {
             args.push(effort.clone());
         }
 
-        let child = Command::new("claude")
+        let mut command = Command::new("claude");
+        command
             .args(&args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| ClaudeCliError::Spawn(e.to_string()))?;
+            .stderr(Stdio::piped());
 
-        // 10-minute timeout per CLI call — a hung claude process won't block
-        // forever. The write is inside it, so a prompt that cannot be
+        let child = spawn_cli(&mut command).map_err(|e| ClaudeCliError::Spawn(e.to_string()))?;
+
+        // An idle deadline per CLI call — a hung claude process won't block
+        // forever, while one that is still reporting progress runs as long as
+        // the review takes. The write is inside it, so a prompt that cannot be
         // delivered is bounded the same way.
-        let output = timeout(
-            Duration::from_secs(600),
-            write_prompt_and_wait(child, prompt),
-        )
-        .await
-        .map_err(|_| ClaudeCliError::Timeout)?
-        .map_err(|e| match e {
-            CliIoError::Write(e) => ClaudeCliError::Stdin(e.to_string()),
-            CliIoError::Wait(e) => ClaudeCliError::Wait(e.to_string()),
-        })?;
+        let output = write_prompt_and_wait(child, prompt, IDLE_TIMEOUT)
+            .await
+            .map_err(|e| match e {
+                CliIoError::Write(e) => ClaudeCliError::Stdin(e.to_string()),
+                CliIoError::Read(e) => ClaudeCliError::Wait(e.to_string()),
+                CliIoError::Wait(e) => ClaudeCliError::Wait(e.to_string()),
+                CliIoError::Idle(idle) => ClaudeCliError::Timeout(idle.after.as_secs()),
+            })?;
 
         if !output.stderr.is_empty() {
             let stderr = String::from_utf8_lossy(&output.stderr);
