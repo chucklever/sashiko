@@ -265,7 +265,7 @@ impl<'a> SessionRunner<'a> {
 
             // Kept so that a rejected answer can be forgotten below.
             let sent = request.clone();
-            let resp = match self.provider.generate_content(request).await {
+            let resp = match crate::ai::generate_content_traced(self.provider, request).await {
                 Ok(r) => r,
                 Err(e) => match classify_ai_error(&e) {
                     AiErrorClass::RateLimit { retry_after }
