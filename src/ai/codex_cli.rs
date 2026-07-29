@@ -114,40 +114,57 @@ impl AiProvider for CodexCliProvider {
         //   {"type": "error", "message": "..."}
         let mut text_parts = Vec::new();
         let mut usage: Option<AiUsage> = None;
+        // Every item.completed carrying text feeds the response, whatever the
+        // item is, so a reasoning summary is concatenated ahead of the answer
+        // and the combined text no longer parses as the JSON object a stage
+        // asks for.  Recording which item types contributed, and how much,
+        // shows whether that is what happened on a given run.
+        let mut contributors: Vec<String> = Vec::new();
+        let mut unparsed_lines = 0usize;
 
         for line in raw.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            if let Ok(event) = serde_json::from_str::<Value>(trimmed) {
-                if let Some(message) = error_message(&event) {
-                    self.check_error_message(message)?;
-                }
-                match event["type"].as_str() {
-                    Some("item.completed") => {
-                        if let Some(text) = event["item"]["text"].as_str() {
-                            text_parts.push(text.to_string());
-                        }
+            let Ok(event) = serde_json::from_str::<Value>(trimmed) else {
+                unparsed_lines += 1;
+                continue;
+            };
+            if let Some(message) = error_message(&event) {
+                self.check_error_message(message)?;
+            }
+            match event["type"].as_str() {
+                Some("item.completed") => {
+                    if let Some(text) = event["item"]["text"].as_str() {
+                        let kind = event["item"]["type"].as_str().unwrap_or("untyped");
+                        contributors.push(format!("{kind}:{}", text.len()));
+                        text_parts.push(text.to_string());
                     }
-                    Some("turn.completed") => {
-                        let u = &event["usage"];
-                        if !u.is_null() {
-                            let input = u["input_tokens"].as_u64().unwrap_or(0) as usize;
-                            let output_tokens = u["output_tokens"].as_u64().unwrap_or(0) as usize;
-                            let cached = u["cached_input_tokens"].as_u64().unwrap_or(0) as usize;
-                            usage = Some(AiUsage {
-                                prompt_tokens: input,
-                                completion_tokens: output_tokens,
-                                total_tokens: input + output_tokens,
-                                cached_tokens: if cached > 0 { Some(cached) } else { None },
-                            });
-                        }
-                    }
-                    _ => {}
                 }
+                Some("turn.completed") => {
+                    let u = &event["usage"];
+                    if !u.is_null() {
+                        let input = u["input_tokens"].as_u64().unwrap_or(0) as usize;
+                        let output_tokens = u["output_tokens"].as_u64().unwrap_or(0) as usize;
+                        let cached = u["cached_input_tokens"].as_u64().unwrap_or(0) as usize;
+                        usage = Some(AiUsage {
+                            prompt_tokens: input,
+                            completion_tokens: output_tokens,
+                            total_tokens: input + output_tokens,
+                            cached_tokens: if cached > 0 { Some(cached) } else { None },
+                        });
+                    }
+                }
+                _ => {}
             }
         }
+
+        debug!(
+            unparsed_lines,
+            "codex-cli text items: [{}]",
+            contributors.join(", ")
+        );
 
         let response_text = text_parts.join("\n");
         if response_text.is_empty() {

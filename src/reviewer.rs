@@ -1884,7 +1884,7 @@ async fn run_review_tool_with_cmd(
 
                                                     let _permit = llm_semaphore_clone.acquire().await?;
 
-                                                    match provider_clone.generate_content(req.clone()).await {
+                                                    match crate::ai::generate_content_traced(&*provider_clone, req.clone()).await {
                                                         Ok(resp) => {
                                                             quota_clone.report_success().await;
                                                             break Ok(resp);

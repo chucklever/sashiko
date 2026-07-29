@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
+use tracing::Instrument;
 
 use crate::settings::{AiSettings, Settings};
 
@@ -376,6 +377,60 @@ pub trait AiProvider: Send + Sync {
     fn cache_identity(&self) -> String {
         self.get_capabilities().model_name
     }
+}
+
+/// Calls a provider inside a span carrying the request's context tag, then
+/// records what the call cost and what came back.
+///
+/// The tag identifies the patchset, patch, and review stage a request belongs
+/// to (`[ps:1 p:2 s:3]`), and it already travels on every request the review
+/// path builds.  Nothing read it before this: stages run concurrently against
+/// one CLI, so a provider's own events -- prompt length, stderr chatter, a
+/// parse that fell back to raw content -- interleaved with no way to tell which
+/// stage emitted which, or whether a second request was a fresh stage or the
+/// same stage retrying.  A span attaches the tag to all of them, including the
+/// events a wrapped caching provider emits on the way through.
+///
+/// The completion record closes the other gap.  Duration was recoverable only
+/// by subtracting the timestamps of two lines that concurrency can separate
+/// arbitrarily, and token usage was parsed by every provider and then dropped
+/// without ever reaching the log.
+pub async fn generate_content_traced(
+    provider: &dyn AiProvider,
+    request: AiRequest,
+) -> Result<AiResponse> {
+    let span = tracing::info_span!(
+        "ai_call",
+        ctx = request.context_tag.as_deref().unwrap_or("-").trim(),
+        model = %provider.get_capabilities().model_name,
+    );
+
+    async move {
+        let started = std::time::Instant::now();
+        let result = provider.generate_content(request).await;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+
+        match &result {
+            Ok(resp) => {
+                let usage = resp.usage.as_ref();
+                tracing::info!(
+                    elapsed_ms,
+                    content_chars = resp.content.as_deref().map_or(0, str::len),
+                    tool_calls = resp.tool_calls.as_ref().map_or(0, Vec::len),
+                    prompt_tokens = usage.map_or(0, |u| u.prompt_tokens),
+                    completion_tokens = usage.map_or(0, |u| u.completion_tokens),
+                    cached_tokens = usage.and_then(|u| u.cached_tokens).unwrap_or(0),
+                    truncated = resp.truncated,
+                    "AI call completed"
+                );
+            }
+            Err(e) => tracing::warn!(elapsed_ms, "AI call failed: {}", e),
+        }
+
+        result
+    }
+    .instrument(span)
+    .await
 }
 
 /// Appends the knobs a provider applies outside the request to its model name,
@@ -911,6 +966,105 @@ mod tests {
     use crate::worker::prompts::ReviewError;
     use anyhow::anyhow;
     use serde_json::json;
+    use std::sync::Mutex;
+
+    /// Collects formatted log output so a test can assert on what a span
+    /// actually rendered rather than on the call that declared it.
+    #[derive(Clone, Default)]
+    struct LogBuffer(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuffer {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
+        type Writer = LogBuffer;
+        fn make_writer(&'a self) -> LogBuffer {
+            self.clone()
+        }
+    }
+
+    struct StubProvider;
+
+    #[async_trait]
+    impl AiProvider for StubProvider {
+        async fn generate_content(&self, _request: AiRequest) -> Result<AiResponse> {
+            tracing::warn!("stub-cli response not valid JSON");
+            Ok(AiResponse {
+                content: Some("hi".to_string()),
+                thought: None,
+                thought_signature: None,
+                tool_calls: None,
+                usage: Some(AiUsage {
+                    prompt_tokens: 11,
+                    completion_tokens: 22,
+                    total_tokens: 33,
+                    cached_tokens: Some(7),
+                }),
+                truncated: false,
+            })
+        }
+
+        fn estimate_tokens(&self, _request: &AiRequest) -> usize {
+            0
+        }
+
+        fn get_capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                model_name: "stub-model".to_string(),
+                context_window_size: 1000,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn the_context_tag_reaches_events_the_provider_emits() {
+        let buffer = LogBuffer::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(buffer.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let request = AiRequest {
+            system: None,
+            messages: vec![],
+            tools: None,
+            temperature: None,
+            response_format: None,
+            context_tag: Some("[ps:12 p:34 s:5] ".to_string()),
+        };
+        generate_content_traced(&StubProvider, request)
+            .await
+            .expect("the stub provider answers");
+
+        let logs = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+
+        // The warning the provider itself emitted carries the tag, which is the
+        // point: a provider logs nothing about which stage it is serving.
+        let warning = logs
+            .lines()
+            .find(|l| l.contains("not valid JSON"))
+            .expect("the provider's own warning was logged");
+        assert!(warning.contains("ps:12 p:34 s:5"), "{warning}");
+        assert!(warning.contains("stub-model"), "{warning}");
+
+        let completion = logs
+            .lines()
+            .find(|l| l.contains("AI call completed"))
+            .expect("the completion record was logged");
+        assert!(completion.contains("prompt_tokens=11"), "{completion}");
+        assert!(completion.contains("completion_tokens=22"), "{completion}");
+        assert!(completion.contains("cached_tokens=7"), "{completion}");
+        assert!(completion.contains("elapsed_ms="), "{completion}");
+    }
 
     #[test]
     fn test_ai_request_contract() -> Result<()> {
