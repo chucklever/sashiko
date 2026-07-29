@@ -1854,7 +1854,7 @@ async fn run_review_tool_with_cmd(
 
                                             let ctx_tag = req.context_tag.clone().unwrap_or_default();
                                             let resp_payload = crate::ai::LOG_CONTEXT
-                                                .scope(ctx_tag, provider_clone.generate_content(req.clone()))
+                                                .scope(ctx_tag, crate::ai::generate_content_traced(&*provider_clone, req.clone()))
                                                 .await;
 
                                             let reply = match resp_payload {

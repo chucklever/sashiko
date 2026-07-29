@@ -48,6 +48,33 @@ pub fn redact_secret(s: &str) -> String {
     redacted_url.to_string()
 }
 
+/// Renders `s` for a single log line as its first `head` and last `tail`
+/// characters with the elided count between them.  A parse that gives up
+/// reports what it choked on, and both ends carry information: text that opens
+/// with prose and closes with a JSON object is indistinguishable from text that
+/// never emitted JSON when only the head is shown.  Newlines become `\n` so the
+/// result stays one grep-able line, and the cuts land on character boundaries,
+/// since slicing by byte offset panics inside a multi-byte character.
+pub fn head_tail_snippet(s: &str, head: usize, tail: usize) -> String {
+    let total = s.chars().count();
+    let joined = if total <= head + tail {
+        s.to_string()
+    } else {
+        let head_end = s.char_indices().nth(head).map_or(s.len(), |(i, _)| i);
+        let tail_start = s
+            .char_indices()
+            .nth(total - tail)
+            .map_or(s.len(), |(i, _)| i);
+        format!(
+            "{}...[{} chars elided]...{}",
+            &s[..head_end],
+            total - head - tail,
+            &s[tail_start..]
+        )
+    };
+    joined.replace('\n', "\\n").replace('\r', "\\r")
+}
+
 /// Cleans a JSON string by escaping unescaped control characters inside string literals.
 ///
 /// This is particularly useful for parsing LLM-generated JSON, which sometimes
@@ -108,6 +135,26 @@ mod tests {
         assert_eq!(utf8_prefix("abc🙂def", 6), "abc");
         assert_eq!(utf8_prefix("🙂", 0), "");
         assert_eq!(utf8_prefix("short", 100), "short");
+    }
+
+    #[test]
+    fn test_head_tail_snippet_keeps_both_ends() {
+        let text = "prose about the patch\nmore prose\n{\"concerns\": []}";
+        let snippet = head_tail_snippet(text, 10, 10);
+        assert_eq!(snippet, "prose abou...[29 chars elided]...erns\": []}");
+    }
+
+    #[test]
+    fn test_head_tail_snippet_passes_short_text_through() {
+        assert_eq!(head_tail_snippet("a\nb", 10, 10), "a\\nb");
+        assert_eq!(head_tail_snippet("", 10, 10), "");
+    }
+
+    #[test]
+    fn test_head_tail_snippet_on_multibyte_boundary() {
+        // Three-byte characters on both cuts: byte-offset slicing would panic
+        let s = "☃☃☃☃☃☃";
+        assert_eq!(head_tail_snippet(s, 2, 2), "☃☃...[2 chars elided]...☃☃");
     }
 
     #[test]

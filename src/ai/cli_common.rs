@@ -397,8 +397,17 @@ pub fn parse_inner_response(
         });
     }
 
-    // Not parseable as JSON — return raw text
-    warn!("{provider} response not valid JSON, returning as raw content");
+    // Not parseable as JSON — return raw text.  Consumers vary in how much
+    // they salvage: a stage validator brace-scans the content and usually
+    // recovers the object this extractor declined to guess at, so the warning
+    // is not by itself a failure.  The snippet tells the two apart -- text that
+    // ends in a JSON object was recovered downstream, text that holds none was
+    // not -- without re-running the call to find out.
+    warn!(
+        chars = text.len(),
+        snippet = %crate::utils::head_tail_snippet(text, 200, 200),
+        "{provider} response not valid JSON, returning as raw content"
+    );
     Ok(AiResponse {
         content: Some(text.to_string()),
         thought: None,
