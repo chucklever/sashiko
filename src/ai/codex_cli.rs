@@ -107,43 +107,61 @@ impl AiProvider for CodexCliProvider {
         //   {"type": "error", "message": "..."}
         let mut final_message: Option<String> = None;
         let mut usage: Option<AiUsage> = None;
+        // Every item.completed may carry text, but only the last
+        // agent_message is the answer.  Recording which item types carried
+        // text, and how much, shows what the answer was chosen from on a
+        // given run.
+        let mut contributors: Vec<String> = Vec::new();
+        let mut unparsed_lines = 0usize;
 
         for line in raw.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
             }
-            if let Ok(event) = serde_json::from_str::<Value>(trimmed) {
-                if let Some(message) = error_message(&event) {
-                    self.check_error_message(message)?;
-                }
-                match event["type"].as_str() {
-                    Some("item.completed") => {
-                        // Earlier messages are commentary between codex's own
-                        // tool runs, and reasoning items carry text too. Only
-                        // the last message is the answer.
-                        if let Some(text) = agent_message_text(&event) {
-                            final_message = Some(text.to_string());
-                        }
+            let Ok(event) = serde_json::from_str::<Value>(trimmed) else {
+                unparsed_lines += 1;
+                continue;
+            };
+            if let Some(message) = error_message(&event) {
+                self.check_error_message(message)?;
+            }
+            match event["type"].as_str() {
+                Some("item.completed") => {
+                    if let Some(text) = event["item"]["text"].as_str() {
+                        let kind = event["item"]["type"].as_str().unwrap_or("untyped");
+                        contributors.push(format!("{kind}:{}", text.len()));
                     }
-                    Some("turn.completed") => {
-                        let u = &event["usage"];
-                        if !u.is_null() {
-                            let input = u["input_tokens"].as_u64().unwrap_or(0) as usize;
-                            let output_tokens = u["output_tokens"].as_u64().unwrap_or(0) as usize;
-                            let cached = u["cached_input_tokens"].as_u64().unwrap_or(0) as usize;
-                            usage = Some(AiUsage {
-                                prompt_tokens: input,
-                                completion_tokens: output_tokens,
-                                total_tokens: input + output_tokens,
-                                cached_tokens: if cached > 0 { Some(cached) } else { None },
-                            });
-                        }
+                    // Earlier messages are commentary between codex's own
+                    // tool runs, and reasoning items carry text too. Only
+                    // the last message is the answer.
+                    if let Some(text) = agent_message_text(&event) {
+                        final_message = Some(text.to_string());
                     }
-                    _ => {}
                 }
+                Some("turn.completed") => {
+                    let u = &event["usage"];
+                    if !u.is_null() {
+                        let input = u["input_tokens"].as_u64().unwrap_or(0) as usize;
+                        let output_tokens = u["output_tokens"].as_u64().unwrap_or(0) as usize;
+                        let cached = u["cached_input_tokens"].as_u64().unwrap_or(0) as usize;
+                        usage = Some(AiUsage {
+                            prompt_tokens: input,
+                            completion_tokens: output_tokens,
+                            total_tokens: input + output_tokens,
+                            cached_tokens: if cached > 0 { Some(cached) } else { None },
+                        });
+                    }
+                }
+                _ => {}
             }
         }
+
+        debug!(
+            unparsed_lines,
+            "codex-cli text items: [{}]",
+            contributors.join(", ")
+        );
 
         let Some(response_text) = final_message.filter(|t| !t.is_empty()) else {
             // Fall back to raw output if no events parsed
