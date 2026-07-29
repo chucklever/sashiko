@@ -61,6 +61,7 @@ fastrand = "2.4.1"
 flate2 = "1.1.9"
 futures = "0.3.31"
 lettre = { version = "0.11.7", default-features = false, features = ["builder", "hostname", "pool", "smtp-transport", "tokio1", "tokio1-rustls-tls"] }
+libc = "0.2.186"
 libsql = "0.9.29"
 mail-parser = "0.11.3"
 regex = "1.12.2"

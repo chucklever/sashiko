@@ -173,10 +173,29 @@ impl std::fmt::Display for CliIoError {
     }
 }
 
-/// Spawn a CLI with the pipes and drop behaviour `write_prompt_and_wait()`
-/// expects.
+/// Spawn a CLI in a process group of its own, so a timeout can take down the
+/// whole tree.
+///
+/// `codex` and `copilot` install as node wrappers that run the real binary as
+/// a grandchild.  Killing the child alone leaves that grandchild attached to
+/// the same pipes and billing against the same subscription until it notices
+/// they are gone, which measured at over a minute past the kill.  A group of
+/// its own also keeps the CLI off this process's group, so a signal aimed at
+/// the daemon's terminal does not reach a review mid-flight.
+///
+/// `write_prompt_and_wait()` signals the group this establishes; a child
+/// spawned any other way must not be passed to it.
 pub fn spawn_cli(cmd: &mut Command) -> std::io::Result<Child> {
-    cmd.kill_on_drop(true).spawn()
+    cmd.process_group(0).kill_on_drop(true).spawn()
+}
+
+/// Signal the whole group, having spawned its leader with `process_group(0)`
+/// so that the group holds the CLI and its descendants and nothing else.
+fn kill_group(pgid: i32) {
+    // SAFETY: kill(2) touches no memory of this process.  A negative pid
+    // addresses the group led by `pgid`, which `spawn_cli` created for the
+    // child alone, so the signal cannot reach the daemon or its siblings.
+    unsafe { libc::kill(-pgid, libc::SIGKILL) };
 }
 
 /// Read from a pipe that may already have reached EOF, in a form `select!` can
@@ -215,9 +234,10 @@ where
 ///
 /// `idle_timeout` bounds silence rather than runtime, so a CLI that keeps
 /// reporting progress runs as long as the work takes while one that has
-/// wedged is cut off.  Reaching the deadline kills the child and returns what
-/// it had produced up to that point.  Killing rather than dropping is what
-/// releases a write still blocked on the child's stdin.
+/// wedged is cut off.  Reaching the deadline kills the child's process group
+/// -- `spawn_cli` must have established it -- and returns what the CLI had
+/// produced up to that point.  Killing rather than dropping is what releases
+/// a write still blocked on the child's stdin.
 pub async fn write_prompt_and_wait(
     mut child: Child,
     prompt: String,
@@ -225,6 +245,7 @@ pub async fn write_prompt_and_wait(
 ) -> std::result::Result<std::process::Output, CliIoError> {
     use tokio::io::AsyncWriteExt;
 
+    let pgid = child.id().map(|id| id as i32);
     let mut stdin = child.stdin.take();
     let mut stdout = child.stdout.take();
     let mut stderr = child.stderr.take();
@@ -260,6 +281,13 @@ pub async fn write_prompt_and_wait(
             let (is_stdout, read) = match step {
                 Ok(step) => step,
                 Err(_) => {
+                    if let Some(pgid) = pgid {
+                        kill_group(pgid);
+                    }
+                    // The group signal reaches the child too, but only where
+                    // the child leads that group.  Signal it directly as
+                    // well, so the wait below cannot block on a child the
+                    // group kill did not cover.
                     let _ = child.start_kill();
                     let _ = child.wait().await;
                     return Err(CliIoError::Idle(IdleOutput {
@@ -674,6 +702,42 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
     }
 
+    #[tokio::test]
+    async fn the_idle_kill_reaches_a_grandchild() {
+        // `codex` and `copilot` are node wrappers that run the real binary as
+        // a grandchild.  Killing the wrapper alone leaves that grandchild
+        // billing against the same subscription.
+        // Both sleeps outlast the test by far, so nothing here ends on its
+        // own: the grandchild is gone at the end only if the kill reached it.
+        let child = spawn_sh("sleep 600 & echo $!; sleep 600");
+
+        let err = tokio::time::timeout(
+            Duration::from_secs(10),
+            write_prompt_and_wait(child, String::new(), Duration::from_millis(300)),
+        )
+        .await
+        .expect("the deadline must kill the child, not wait it out")
+        .expect_err("silence past the deadline must fail");
+        let CliIoError::Idle(idle) = err else {
+            panic!("got {err:?}")
+        };
+
+        // The grandchild's pid is the one line the script emits before going
+        // quiet.
+        let pid = String::from_utf8_lossy(&idle.stdout)
+            .trim()
+            .parse::<i32>()
+            .unwrap();
+        for _ in 0..50 {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        // Do not leave it running if the assert is about to fail.
+        unsafe { libc::kill(pid, libc::SIGKILL) };
+        panic!("grandchild {pid} survived the process-group kill");
+    }
 
     #[test]
     fn test_parse_tool_calls_without_ids_get_distinct_ids() {
