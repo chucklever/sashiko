@@ -2787,6 +2787,7 @@ echo '{"patchset_id": 1, "patches": [{"index": 1, "status": "applied"}]}'
                                 temperature: None,
                                 response_format: None,
                                 context_tag: None,
+                                workspace: None,
                             })
                             .await?;
 

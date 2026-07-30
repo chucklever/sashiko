@@ -475,6 +475,7 @@ mod tests {
             temperature: Some(0.7),
             response_format: None,
             context_tag: None,
+            workspace: None,
         };
 
         let ollama_req = translate_ollama_request(request, 128_000, 4096, None)?;
@@ -513,6 +514,7 @@ mod tests {
             temperature: None,
             response_format: None,
             context_tag: None,
+            workspace: None,
         };
 
         let ollama_req = translate_ollama_request(request, 128_000, 4096, None)?;
@@ -646,6 +648,7 @@ mod tests {
             temperature: None,
             response_format: None,
             context_tag: None,
+            workspace: None,
         };
 
         let tokens = estimate_tokens(&request);
@@ -669,6 +672,7 @@ mod tests {
             temperature: Some(0.5),
             response_format: None,
             context_tag: None,
+            workspace: None,
         };
 
         let ollama_req = translate_ollama_request(request, 128_000, 2048, None)?;
@@ -696,6 +700,7 @@ mod tests {
             temperature: None,
             response_format: None,
             context_tag: None,
+            workspace: None,
         };
 
         let ollama_req = translate_ollama_request(request, 128_000, 2048, None)?;

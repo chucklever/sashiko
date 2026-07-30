@@ -148,6 +148,12 @@ pub struct AiRequest {
     /// Optional context tag for logging (e.g., [ps:123 p:1 s:4])
     #[serde(skip_serializing_if = "Option::is_none")]
     pub context_tag: Option<String>,
+    /// Directory a CLI-backed provider runs its subprocess in, so its file
+    /// access reads the tree the request is about.  The review binary owns
+    /// the worktree but the daemon spawns the CLI, so the path has to cross
+    /// that hop with the request.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<std::path::PathBuf>,
 }
 
 tokio::task_local! {
@@ -968,6 +974,36 @@ mod tests {
     use serde_json::json;
     use std::sync::Mutex;
 
+    /// The review binary proxies every call to the daemon as JSON, so a
+    /// workspace that does not survive the round trip leaves the daemon
+    /// spawning the CLI in its own directory.
+    #[test]
+    fn workspace_survives_the_ipc_round_trip() {
+        let request = AiRequest {
+            system: None,
+            messages: vec![],
+            tools: None,
+            temperature: None,
+            response_format: None,
+            context_tag: None,
+            workspace: Some(std::path::PathBuf::from("/tmp/review_trees/wt-abc")),
+        };
+
+        let wire = serde_json::to_string(&request).unwrap();
+        let back: AiRequest = serde_json::from_str(&wire).unwrap();
+
+        assert_eq!(back.workspace, request.workspace);
+    }
+
+    /// A daemon still reads a payload from an older review binary, which
+    /// sends no such field.
+    #[test]
+    fn absent_workspace_deserializes_to_none() {
+        let back: AiRequest = serde_json::from_str(r#"{"messages": []}"#).unwrap();
+
+        assert_eq!(back.workspace, None);
+    }
+
     /// Collects formatted log output so a test can assert on what a span
     /// actually rendered rather than on the call that declared it.
     #[derive(Clone, Default)]
@@ -1040,6 +1076,7 @@ mod tests {
             temperature: None,
             response_format: None,
             context_tag: Some("[ps:12 p:34 s:5] ".to_string()),
+            workspace: None,
         };
         generate_content_traced(&StubProvider, request)
             .await
@@ -1082,6 +1119,7 @@ mod tests {
             temperature: Some(0.5),
             response_format: Some(AiResponseFormat::Text),
             context_tag: None,
+            workspace: None,
         };
 
         // This matches the format used in StdioGeminiClient and expected by the Worker

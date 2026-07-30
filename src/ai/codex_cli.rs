@@ -69,6 +69,13 @@ impl AiProvider for CodexCliProvider {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
+        // `--sandbox read-only` roots codex's file access at the working
+        // directory, so a request carrying a worktree has to run there.
+        if let Some(workspace) = &request.workspace {
+            debug!("codex-cli workspace: {}", workspace.display());
+            command.current_dir(workspace);
+        }
+
         let child = spawn_cli(&mut command)
             .map_err(|e| anyhow::anyhow!("Failed to spawn codex CLI: {}. Is it installed?", e))?;
 

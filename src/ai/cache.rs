@@ -99,9 +99,15 @@ impl CachingAiProvider {
 
     fn compute_cache_key(&self, request: &AiRequest) -> String {
         let mut val = serde_json::to_value(request).unwrap_or_default();
-        // Strip nondeterministic fields
+        // Strip nondeterministic fields.  A worktree path carries a random
+        // suffix, so keying on it would miss every re-review.  Whether one
+        // was offered at all still belongs in the key: a provider that read
+        // the tree saw code that a provider without it did not.
         if let serde_json::Value::Object(ref mut map) = val {
             map.remove("context_tag");
+            if let Some(workspace) = map.get_mut("workspace") {
+                *workspace = serde_json::Value::Bool(true);
+            }
         }
         super::scrub_thought_signatures(&mut val);
         let canonical = serde_json::to_string(&val).unwrap_or_default();
@@ -225,5 +231,67 @@ impl AiProvider for CachingAiProvider {
             tokens_saved_this_session: self.tokens_saved_this.load(Ordering::Relaxed),
             tokens_saved_prev_session: self.tokens_saved_prev.load(Ordering::Relaxed),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::{AiMessage, AiRole};
+
+    struct StubProvider;
+
+    #[async_trait]
+    impl AiProvider for StubProvider {
+        async fn generate_content(&self, _request: AiRequest) -> Result<AiResponse> {
+            unreachable!("the key is computed without reaching the provider")
+        }
+
+        fn estimate_tokens(&self, _request: &AiRequest) -> usize {
+            0
+        }
+
+        fn get_capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                model_name: "stub".to_string(),
+                context_window_size: 1,
+            }
+        }
+    }
+
+    fn request(workspace: Option<&str>) -> AiRequest {
+        AiRequest {
+            system: None,
+            messages: vec![AiMessage {
+                role: AiRole::User,
+                content: Some("review this patch".to_string()),
+                thought: None,
+                thought_signature: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: None,
+            temperature: None,
+            response_format: None,
+            context_tag: None,
+            workspace: workspace.map(std::path::PathBuf::from),
+        }
+    }
+
+    /// A review that read the tree reports on code a review without one never
+    /// saw, so the two must not share a cache entry.  The path itself carries
+    /// a random suffix and must stay out of the key.
+    #[tokio::test]
+    async fn workspace_presence_keys_the_cache_but_the_path_does_not() {
+        let cache = CachingAiProvider::new(Arc::new(StubProvider), ":memory:", 7)
+            .await
+            .expect("in-memory cache");
+
+        let without = cache.compute_cache_key(&request(None));
+        let first = cache.compute_cache_key(&request(Some("/tmp/sashiko-worktree-a1b2")));
+        let second = cache.compute_cache_key(&request(Some("/tmp/sashiko-worktree-c3d4")));
+
+        assert_eq!(first, second);
+        assert_ne!(without, first);
     }
 }

@@ -413,6 +413,7 @@ mod tests {
             temperature: None,
             response_format: None,
             context_tag: None,
+            workspace: None,
         };
 
         let claude_req = claude::translate_ai_request(&ai_req, false, 4096, None, None).unwrap();
