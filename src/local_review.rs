@@ -31,7 +31,7 @@ use std::{
     sync::Arc,
 };
 use tokio::sync::Semaphore;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 #[derive(Clone, Debug)]
 pub struct WorkerOptions {
@@ -483,6 +483,7 @@ async fn review_single_patch(
     llm_semaphore: &Arc<Semaphore>,
     quota: &Arc<crate::ai::quota::QuotaManager>,
     timeout_seconds: u64,
+    may_move_checkout: bool,
     progress: Option<&ProgressCallback<'_>>,
 ) -> Result<Value> {
     let retry_budget: Option<Arc<dyn crate::ai::backoff_provider::RetryBudget>> =
@@ -493,6 +494,23 @@ async fn review_single_patch(
             Arc::new(crate::ai::backoff_provider::DeadlineBudget::new(deadline))
                 as Arc<dyn crate::ai::backoff_provider::RetryBudget>
         });
+
+    // The checkout sits at the whole applied series in the apply path and at
+    // the baseline in the review-commit path, so it has to be moved before
+    // `set_workspace` may offer it.  It holds that revision for the retries
+    // below, which is why this runs once rather than per attempt.
+    let mut workspace_ready = false;
+    if may_move_checkout && let Some(sha) = patch_shas.get(&p.index) {
+        match worktree.reset_hard(sha).await {
+            Ok(()) => workspace_ready = true,
+            Err(e) => warn!(
+                "Failed to put the worktree on {} for patch {}: {}; \
+                 CLI providers run without a workspace",
+                sha, p.index, e
+            ),
+        }
+    }
+
     let mut last_error = None;
     for attempt in 1..=3 {
         emit(
@@ -548,6 +566,10 @@ async fn review_single_patch(
         if let Some(sha) = patch_shas.get(&p.index) {
             info!("Setting virtual HEAD to {} for patch {}", sha, p.index);
             tools.set_virtual_head(sha.clone());
+
+            if workspace_ready {
+                tools.set_workspace();
+            }
         }
 
         let prompts = PromptRegistry::new(options.prompts.clone());
@@ -918,6 +940,11 @@ async fn run_worker_in_worktree(
     ));
     // Shared so a rate-limit response from one request backs the whole run off.
     let quota = Arc::new(crate::ai::quota::QuotaManager::new());
+    // Moving the checkout is safe only on a tree this process created -- never
+    // the user's own, nor one shared with sibling review processes -- and only
+    // when no concurrent review here shares it.
+    let may_move_checkout = worktree.owned && (concurrency <= 1 || patches_to_review.len() == 1);
+
     // Execute patch reviews concurrently with a limit
     let futures_stream = futures::stream::iter(patches_to_review.iter().map(|p| {
         let rich_patches = rich_patches.clone();
@@ -942,6 +969,7 @@ async fn run_worker_in_worktree(
                 llm_semaphore,
                 quota,
                 timeout_seconds,
+                may_move_checkout,
                 progress,
             )
             .await
@@ -1420,6 +1448,7 @@ mod tests {
             temperature: None,
             response_format: None,
             context_tag: None,
+            workspace: None,
         }
     }
 
