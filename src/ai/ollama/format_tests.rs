@@ -33,6 +33,7 @@ fn request(response_format: Option<AiResponseFormat>) -> AiRequest {
         context_tag: None,
         reasoning_effort: None,
         conversation_id: None,
+        workspace: None,
     }
 }
 

@@ -1663,6 +1663,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
         let resp = AiProvider::generate_content(&client, req)
             .await
@@ -2131,6 +2132,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2180,6 +2182,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2235,6 +2238,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2359,6 +2363,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let translated = translate_ai_request(follow_up)?;
@@ -2397,6 +2402,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2432,6 +2438,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2471,6 +2478,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2530,6 +2538,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2619,6 +2628,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2656,6 +2666,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2706,6 +2717,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2778,6 +2790,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let none_req = translate_ai_request(base_req.clone())?;
@@ -2839,6 +2852,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let translated = translate_ai_request_with_options(req.clone(), None, Some(131_072))?;
@@ -2987,6 +3001,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         })?;
         assert_eq!(retry_req.contents.len(), 3);
         assert_eq!(retry_req.contents[1].role, "model");
@@ -3032,6 +3047,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         })?;
         assert_eq!(both_signed_req.contents[0].parts.len(), 2);
         assert!(matches!(
@@ -3195,6 +3211,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: Some(crate::ai::ReasoningEffort::High),
             conversation_id: None,
+            workspace: None,
         };
 
         let ai_resp = AiProvider::generate_content(&client, req).await?;
@@ -3451,6 +3468,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let first = AiProvider::generate_content(&client, make_req()).await?;

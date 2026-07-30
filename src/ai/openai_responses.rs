@@ -782,6 +782,7 @@ mod tests {
             reasoning_effort: None,
             context_tag: None,
             conversation_id: None,
+            workspace: None,
         }
     }
 

@@ -48,6 +48,11 @@ pub struct GitWorktree {
     pub path: PathBuf,
     pub repo_path: PathBuf,
     pub is_managed: bool,
+    /// True when this process created the tree and may reset it.
+    /// Not the same as is_managed, which only says removal needs
+    /// `git worktree remove`: a scratch clone is owned but not
+    /// managed.
+    pub owned: bool,
 }
 
 impl GitWorktree {
@@ -58,6 +63,7 @@ impl GitWorktree {
             path,
             repo_path,
             is_managed: false,
+            owned: false,
         }
     }
 
@@ -93,6 +99,7 @@ impl GitWorktree {
             path: path.clone(),
             repo_path: repo_path.to_path_buf(),
             is_managed: false,
+            owned: true,
         };
 
         debug!("Creating worktree at {:?}", path);
@@ -215,6 +222,7 @@ impl GitWorktree {
             path: path.clone(),
             repo_path: repo_path.to_path_buf(),
             is_managed: false,
+            owned: true,
         };
 
         debug!("Creating scratch clone at {:?}", path);

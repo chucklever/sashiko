@@ -557,6 +557,7 @@ mod tests {
                 context_tag: None,
                 reasoning_effort: None,
                 conversation_id: None,
+                workspace: None,
             },
             false,
             1024,
@@ -865,6 +866,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let vertex_req = claude_request_body(&ai_req, false, 4096, None, None).unwrap();
@@ -900,6 +902,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let vertex_req = claude_request_body(

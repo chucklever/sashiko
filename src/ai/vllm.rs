@@ -715,6 +715,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         }
     }
 
@@ -906,6 +907,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let vllm_req = translate_vllm_request(request, None, None, false, false)?;

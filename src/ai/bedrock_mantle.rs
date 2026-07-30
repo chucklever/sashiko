@@ -774,6 +774,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         }
     }
 

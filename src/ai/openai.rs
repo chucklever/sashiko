@@ -751,6 +751,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let openai_req =
@@ -798,6 +799,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let openai_req =
@@ -837,6 +839,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let openai_req =
@@ -880,6 +883,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let translate = |thought, send| {
@@ -963,6 +967,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let openai_req =
@@ -1002,6 +1007,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let openai_req =
@@ -1027,6 +1033,7 @@ mod tests {
                 context_tag: None,
                 reasoning_effort: None,
                 conversation_id: None,
+                workspace: None,
             },
             4096,
             OpenAiProviderType::OpenAiCompatible,
@@ -1082,6 +1089,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let openai_req =
@@ -1121,6 +1129,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let openai_req =
@@ -1158,6 +1167,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let openai_req =
@@ -1198,6 +1208,7 @@ mod tests {
                     context_tag: None,
                     reasoning_effort: None,
                     conversation_id: None,
+                    workspace: None,
                 },
                 4096,
                 OpenAiProviderType::OpenAiCompatible,
@@ -1229,6 +1240,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let translated =
@@ -1451,6 +1463,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         let compat_req =
@@ -1558,6 +1571,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         }
     }
 
@@ -1635,6 +1649,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         }
     }
 
@@ -2070,6 +2085,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         };
 
         client.generate_content(request.clone()).await?;
@@ -2129,6 +2145,7 @@ mod tests {
                 context_tag: None,
                 reasoning_effort: None,
                 conversation_id: None,
+                workspace: None,
             };
 
             assert!(client.generate_content(request).await.is_err());
@@ -2169,6 +2186,7 @@ mod tests {
             context_tag: None,
             reasoning_effort: None,
             conversation_id: None,
+            workspace: None,
         }
     }
 
