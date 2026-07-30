@@ -274,6 +274,10 @@ impl<'a, S: Send + Sync + 'static, T: DeserializeOwned + Send + 'static> LlmSess
         self.context_tag.clone()
     }
 
+    fn workspace(&self) -> Option<std::path::PathBuf> {
+        self.tools.workspace()
+    }
+
     fn response_format(&self) -> Option<AiResponseFormat> {
         if self.recitation_fallback_active {
             return None;
@@ -543,6 +547,17 @@ mod tests {
             }
         }
 
+        /// Answers on the first turn without calling a tool, so a test can
+        /// read what the stage put on the wire before any tool ran.
+        fn answering() -> Self {
+            Self {
+                turn: Mutex::new(0),
+                seen: Mutex::new(Vec::new()),
+                calls: Vec::new(),
+                calling_turns: 0,
+            }
+        }
+
         /// Emit the same batch again on the next turn, so a test can reach the
         /// duplicate guard across two call_tools invocations.
         fn repeated_next_turn(mut self) -> Self {
@@ -617,6 +632,57 @@ mod tests {
             self.barrier.wait().await;
             Ok(json!({ "ok": true }))
         }
+    }
+
+    /// Runs a stage against a provider that answers at once, and reports the
+    /// workspace the request carried.
+    async fn workspace_seen_by_stage(tools: ToolBox) -> Option<std::path::PathBuf> {
+        let tmp = tempfile::tempdir().unwrap();
+        let provider = Arc::new(ToolCallingProvider::answering());
+        let env = WorkflowEnv {
+            provider: provider.clone(),
+            tools: Arc::new(tools),
+            base_dir: tmp.path(),
+            context_tag: None,
+        };
+
+        let stage: Stage<EmptyState, String> = Stage::builder("workspace")
+            .user_prompt(PromptTemplate::new("go"))
+            .output_format(OutputFormat::text())
+            .reduce(|_: &mut EmptyState, _: String| {})
+            .build();
+
+        let (_outcome, _mutation) = stage
+            .execute_isolated(&env, &EmptyState, None)
+            .await
+            .expect("the mock answers");
+
+        let seen = provider.seen.lock().unwrap();
+        seen[0].workspace.clone()
+    }
+
+    /// A stage that drops the workspace leaves the CLI reading whatever
+    /// directory the daemon sits in.
+    #[tokio::test]
+    async fn test_stage_request_carries_the_offered_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut tools = ToolBox::new(tmp.path().to_path_buf(), None);
+        tools.set_workspace();
+
+        assert_eq!(
+            workspace_seen_by_stage(tools).await.as_deref(),
+            Some(tmp.path()),
+        );
+    }
+
+    /// The other half of the invariant on `ToolBox::workspace`: a worktree
+    /// nothing has positioned must not reach a CLI.
+    #[tokio::test]
+    async fn test_stage_request_omits_an_unpositioned_worktree() {
+        let tmp = tempfile::tempdir().unwrap();
+        let tools = ToolBox::new(tmp.path().to_path_buf(), None);
+
+        assert_eq!(workspace_seen_by_stage(tools).await, None);
     }
 
     #[tokio::test]

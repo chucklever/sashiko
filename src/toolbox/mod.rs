@@ -64,6 +64,13 @@ impl SashikoToolContext {
 pub struct ToolBox {
     context: SashikoToolContext,
     registry: ToolRegistry<SashikoToolContext>,
+    /// Whether the checkout stands at the revision under review, so a
+    /// CLI-backed provider may run its subprocess there.  The git tools reach
+    /// any revision through `virtual_head` without touching the checkout, so
+    /// the tree on disk is not that revision until something puts it there.
+    /// A CLI reading another revision's tree reports on code the review is
+    /// not about, silently.
+    workspace_ready: bool,
     /// Thread-safe cache of tool invocation results.
     /// Shared with the execution context so that tools can access it internally.
     pub(crate) cache: Arc<RwLock<std::collections::HashMap<String, Value>>>,
@@ -99,6 +106,7 @@ impl ToolBox {
         Self {
             context,
             registry,
+            workspace_ready: false,
             cache,
         }
     }
@@ -111,6 +119,21 @@ impl ToolBox {
         tool: impl framework::LlmTool<SashikoToolContext> + 'static,
     ) {
         self.registry.register(tool);
+    }
+
+    /// Offers the worktree to CLI-backed providers as a working directory.
+    ///
+    /// Call this only once the worktree is checked out at the revision under
+    /// review; see the `workspace_ready` field.
+    pub fn set_workspace(&mut self) {
+        self.workspace_ready = true;
+    }
+
+    /// The working directory a CLI-backed provider should run in, if one is
+    /// safe to offer.
+    pub fn workspace(&self) -> Option<PathBuf> {
+        self.workspace_ready
+            .then(|| self.context.worktree_path.clone())
     }
 
     /// Sets the virtual head commit SHA for the current review session.

@@ -917,6 +917,7 @@ mod tests {
             temperature: Some(0.7),
             response_format: None,
             context_tag: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -964,6 +965,7 @@ mod tests {
             temperature: None,
             response_format: None,
             context_tag: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -1049,6 +1051,7 @@ mod tests {
             temperature: None,
             response_format: None,
             context_tag: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -1089,6 +1092,7 @@ mod tests {
                 schema: Some(schema.clone()),
             }),
             context_tag: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -1146,6 +1150,7 @@ mod tests {
             temperature: None,
             response_format: None,
             context_tag: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -1209,6 +1214,7 @@ mod tests {
             temperature: None,
             response_format: None,
             context_tag: None,
+            workspace: None,
         };
 
         let tokens = estimate_tokens_generic(&request);
