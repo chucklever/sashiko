@@ -118,6 +118,11 @@ pub trait LlmSession: Send {
         None
     }
 
+    /// Optional working directory for a CLI-backed provider's subprocess.
+    fn workspace(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// Executes a tool call requested by the LLM.
     async fn call_tool(&mut self, name: &str, _args: Value) -> Result<Value> {
         anyhow::bail!("Tool execution not implemented for this session: {}", name)
@@ -308,6 +313,7 @@ impl<'a> SessionRunner<'a> {
                 response_format: session.response_format(),
                 context_tag: session.context_tag(),
                 reasoning_effort: session.reasoning_effort(),
+                workspace: session.workspace(),
             };
 
             // Kept so that a rejected answer can be forgotten below.

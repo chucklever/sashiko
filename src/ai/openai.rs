@@ -732,6 +732,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let openai_req = translate_ai_request(request, 4096, OpenAiProviderType::OpenAiCompatible)?;
@@ -777,6 +778,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let openai_req = translate_ai_request(request, 4096, OpenAiProviderType::OpenAiCompatible)?;
@@ -814,6 +816,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let openai_req = translate_ai_request(request, 4096, OpenAiProviderType::OpenAiCompatible)?;
@@ -850,6 +853,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let openai_req = translate_ai_request(request, 4096, OpenAiProviderType::OpenAiCompatible)?;
@@ -887,6 +891,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let openai_req = translate_ai_request(request, 4096, OpenAiProviderType::OpenAiCompatible)?;
@@ -910,6 +915,7 @@ mod tests {
                 response_format: None,
                 context_tag: None,
                 reasoning_effort: None,
+                workspace: None,
             },
             4096,
             OpenAiProviderType::OpenAiCompatible,
@@ -963,6 +969,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let openai_req = translate_ai_request(request, 4096, OpenAiProviderType::OpenAiCompatible)?;
@@ -1000,6 +1007,7 @@ mod tests {
             }),
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let openai_req = translate_ai_request(request, 4096, OpenAiProviderType::OpenAiCompatible)?;
@@ -1035,6 +1043,7 @@ mod tests {
             response_format: Some(AiResponseFormat::Json { schema: None }),
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let openai_req = translate_ai_request(request, 4096, OpenAiProviderType::OpenAiCompatible)?;
@@ -1073,6 +1082,7 @@ mod tests {
                     response_format: Some(AiResponseFormat::Json { schema: None }),
                     context_tag: None,
                     reasoning_effort: None,
+                    workspace: None,
                 },
                 4096,
                 OpenAiProviderType::OpenAiCompatible,
@@ -1102,6 +1112,7 @@ mod tests {
             response_format: Some(AiResponseFormat::Json { schema: None }),
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let translated = translate_ai_request(request, 4096, OpenAiProviderType::OpenAiCompatible)?;
@@ -1312,6 +1323,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let compat_req =
@@ -1531,6 +1543,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         client.generate_content(request.clone()).await?;
@@ -1588,6 +1601,7 @@ mod tests {
                 response_format: None,
                 context_tag: None,
                 reasoning_effort: None,
+                workspace: None,
             };
 
             assert!(client.generate_content(request).await.is_err());
@@ -1627,6 +1641,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         }
     }
 

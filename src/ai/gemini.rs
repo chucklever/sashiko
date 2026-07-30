@@ -1457,6 +1457,7 @@ mod tests {
             temperature: Some(0.0),
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
         let resp = AiProvider::generate_content(&client, req)
             .await
@@ -1910,6 +1911,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -1958,6 +1960,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2091,6 +2094,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let translated = translate_ai_request(follow_up)?;
@@ -2128,6 +2132,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2169,6 +2174,7 @@ mod tests {
             }),
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2227,6 +2233,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2315,6 +2322,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2351,6 +2359,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2400,6 +2409,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let gemini_req = translate_ai_request(request)?;
@@ -2471,6 +2481,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let none_req = translate_ai_request(base_req.clone())?;
@@ -2531,6 +2542,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: None,
+            workspace: None,
         };
 
         let translated = translate_ai_request_with_options(req.clone(), None, Some(131_072))?;
@@ -2758,6 +2770,7 @@ mod tests {
             response_format: None,
             context_tag: None,
             reasoning_effort: Some(crate::ai::ReasoningEffort::High),
+            workspace: None,
         };
 
         let ai_resp = AiProvider::generate_content(&client, req).await?;
