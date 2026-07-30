@@ -762,6 +762,7 @@ mod tests {
             response_format: None,
             reasoning_effort: None,
             context_tag: None,
+            workspace: None,
         }
     }
 

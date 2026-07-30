@@ -120,9 +120,12 @@ impl CachingAiProvider {
         self
     }
 
-    fn canonical_request_json(request: &AiRequest) -> String {
+    fn canonical_request_json(&self, request: &AiRequest) -> String {
         let mut val = serde_json::to_value(request).unwrap_or_default();
-        // Strip nondeterministic fields
+        // Strip nondeterministic fields.  A worktree path carries a random
+        // suffix, so keying on it would miss every re-review.  Whether one
+        // was offered at all still belongs in the key: a provider that read
+        // the tree saw code that a provider without it did not.
         if let serde_json::Value::Object(ref mut map) = val {
             map.remove("context_tag");
             // The system prompt's date would make every day's keys differ. Only
@@ -131,6 +134,9 @@ impl CachingAiProvider {
                 && let Some(text) = system.as_str()
             {
                 *system = PROMPT_DATE.replace(text, "<date>").into();
+            }
+            if let Some(workspace) = map.get_mut("workspace") {
+                *workspace = serde_json::Value::Bool(true);
             }
         }
         super::scrub_thought_signatures(&mut val);
@@ -151,11 +157,11 @@ impl CachingAiProvider {
 
     #[cfg(test)]
     fn compute_cache_key(&self, request: &AiRequest) -> String {
-        let canonical = Self::canonical_request_json(request);
+        let canonical = self.canonical_request_json(request);
         Self::compute_cache_key_for_identity(&self.inner.cache_identity(), &canonical)
     }
 
-    fn candidate_canonicals(request: &AiRequest) -> Vec<String> {
+    fn candidate_canonicals(&self, request: &AiRequest) -> Vec<String> {
         let efforts = [
             request.reasoning_effort,
             None,
@@ -170,7 +176,7 @@ impl CachingAiProvider {
             if !seen_efforts.contains(&effort) {
                 seen_efforts.push(effort);
                 cand_req.reasoning_effort = effort;
-                canonicals.push(Self::canonical_request_json(&cand_req));
+                canonicals.push(self.canonical_request_json(&cand_req));
             }
         }
         canonicals
@@ -245,7 +251,7 @@ impl CachingAiProvider {
             }
         }
 
-        let canonicals = Self::candidate_canonicals(request);
+        let canonicals = self.candidate_canonicals(request);
         let mut candidate_hashes = Vec::new();
         let mut seen_hashes = std::collections::HashSet::new();
         for cand_id in &candidate_identities {
@@ -277,7 +283,7 @@ impl AiProvider for CachingAiProvider {
     }
 
     async fn generate_content(&self, request: AiRequest) -> Result<AiResponse> {
-        let canonical = Self::canonical_request_json(&request);
+        let canonical = self.canonical_request_json(&request);
         let hash = Self::compute_cache_key_for_identity(&self.inner.cache_identity(), &canonical);
         let hash_prefix = &hash[..12];
 
@@ -389,7 +395,7 @@ impl AiProvider for CachingAiProvider {
     }
 
     async fn forget(&self, request: &AiRequest) {
-        let canonical = Self::canonical_request_json(request);
+        let canonical = self.canonical_request_json(request);
         let hash = Self::compute_cache_key_for_identity(&self.inner.cache_identity(), &canonical);
         let mut hashes_to_delete = vec![hash];
         let prefix = get_log_prefix();
@@ -1068,5 +1074,64 @@ mod tests {
             .unwrap();
         assert_eq!(resp4.content.as_deref(), Some("answer from model-c"));
         assert_eq!(calls3.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    use crate::ai::{AiMessage, AiRole};
+
+    struct StubProvider;
+
+    #[async_trait]
+    impl AiProvider for StubProvider {
+        async fn generate_content(&self, _request: AiRequest) -> Result<AiResponse> {
+            unreachable!("the key is computed without reaching the provider")
+        }
+
+        fn get_capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                model_name: "stub".to_string(),
+                context_window_size: 1,
+            }
+        }
+    }
+
+    fn request(workspace: Option<&str>) -> AiRequest {
+        AiRequest {
+            system: None,
+            messages: vec![AiMessage {
+                role: AiRole::User,
+                content: Some("review this patch".to_string()),
+                thought: None,
+                thought_signature: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
+            tools: None,
+            temperature: None,
+            response_format: None,
+            context_tag: None,
+            reasoning_effort: None,
+            workspace: workspace.map(std::path::PathBuf::from),
+        }
+    }
+
+    /// A review that read the tree reports on code a review without one never
+    /// saw, so the two must not share a cache entry.  The path itself carries
+    /// a random suffix and must stay out of the key.
+    #[tokio::test]
+    async fn workspace_presence_keys_the_cache_but_the_path_does_not() {
+        let cache = CachingAiProvider::new(Arc::new(StubProvider), ":memory:", 7)
+            .await
+            .expect("in-memory cache");
+
+        let without = cache.compute_cache_key(&request(None));
+        let first = cache.compute_cache_key(&request(Some("/tmp/sashiko-worktree-a1b2")));
+        let second = cache.compute_cache_key(&request(Some("/tmp/sashiko-worktree-c3d4")));
+
+        assert_eq!(first, second);
+        assert_ne!(without, first);
     }
 }
