@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS patchsets (
     to_recipients TEXT,
     cc_recipients TEXT,
     baseline_id INTEGER,
+    baseline_part_index INTEGER, -- part that supplied baseline_id; NULL if unknown
     model_name TEXT,
     prompts_git_hash TEXT,
     baseline_logs TEXT,

@@ -481,6 +481,9 @@ impl Database {
             .try_add_column("patchsets", "baseline_id", "INTEGER")
             .await;
         let _ = self
+            .try_add_column("patchsets", "baseline_part_index", "INTEGER")
+            .await;
+        let _ = self
             .try_add_column("patchsets", "failed_reason", "TEXT")
             .await;
         let _ = self
@@ -1644,6 +1647,38 @@ impl Database {
         }
     }
 
+    /// Record `baseline_id` as the series base of `patchset_id` unless a
+    /// lower-numbered part already supplied one. A part re-ingested with
+    /// a corrected baseline replaces its own earlier answer.
+    ///
+    /// Only the first patch's parent is the series base; a later patch's
+    /// parent is just the patch before it. An unset baseline takes any
+    /// part's, since the cover letter wins the lowest index but usually
+    /// carries no base-commit trailer.
+    ///
+    /// `part_index` is None when the part that supplied `baseline_id` is
+    /// unknown, as for a row written before the column existed. Unknown
+    /// ranks below every part: any part displaces it, and it displaces
+    /// only an unset or equally unknown baseline.
+    async fn record_series_baseline(
+        &self,
+        patchset_id: i64,
+        baseline_id: i64,
+        part_index: Option<u32>,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE patchsets SET baseline_id = ?, baseline_part_index = ?
+                 WHERE id = ?
+                   AND (baseline_id IS NULL
+                        OR baseline_part_index IS NULL
+                        OR ? <= baseline_part_index)",
+                libsql::params![baseline_id, part_index, patchset_id, part_index],
+            )
+            .await?;
+        Ok(())
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn create_patchset(
         &self,
@@ -1741,11 +1776,7 @@ impl Database {
                 }
 
                 if let Some(bid) = baseline_id {
-                    self.conn
-                        .execute(
-                            "UPDATE patchsets SET baseline_id = ? WHERE id = ?",
-                            libsql::params![bid, id],
-                        )
+                    self.record_series_baseline(id, bid, Some(part_index))
                         .await?;
                 }
 
@@ -1780,7 +1811,7 @@ impl Database {
         let mut rows = self
             .conn
             .query(
-                "SELECT id, date, author, subject, subject_index, total_parts, received_parts, cover_letter_message_id, thread_id FROM patchsets 
+                "SELECT id, date, author, subject, subject_index, total_parts, received_parts, cover_letter_message_id, thread_id, baseline_id, baseline_part_index FROM patchsets
                  WHERE thread_id = ? OR (author = ? AND date BETWEEN ? AND ?)",
                 libsql::params![thread_id, author, window_start, window_end],
             )
@@ -1798,6 +1829,8 @@ impl Database {
             let existing_received: u32 = row.get(6).unwrap_or(0);
             let existing_cover_id: Option<String> = row.get(7).ok();
             let existing_thread_id: Option<i64> = row.get(8).ok();
+            let existing_baseline_id: Option<i64> = row.get(9).ok();
+            let existing_baseline_part: Option<u32> = row.get(10).ok();
 
             // Check if this message is already part of this patchset (Duplicate processing)
             // 1. Check if it is the cover letter.
@@ -1948,7 +1981,12 @@ impl Database {
                 && thread_compatible
                 && !index_collision
             {
-                matches.push((id, existing_subject_index));
+                matches.push((
+                    id,
+                    existing_subject_index,
+                    existing_baseline_id,
+                    existing_baseline_part,
+                ));
             }
         }
 
@@ -1961,7 +1999,9 @@ impl Database {
             let mut current_subject_index = matches[0].1;
 
             // If we have multiple matches, merge others into target_id
-            for (merge_from_id, merge_subject_index) in matches.iter().skip(1) {
+            for (merge_from_id, merge_subject_index, merge_baseline_id, merge_baseline_part) in
+                matches.iter().skip(1)
+            {
                 let merge_from_id = *merge_from_id;
                 info!("Merging patchset {} into {}", merge_from_id, target_id);
 
@@ -2001,6 +2041,14 @@ impl Database {
                     current_subject_index = *merge_subject_index;
                 }
 
+                // A baseline from a lower-numbered part than the target's
+                // is lost when the row is deleted below, with no part left
+                // to supply it again.
+                if let Some(bid) = *merge_baseline_id {
+                    self.record_series_baseline(target_id, bid, *merge_baseline_part)
+                        .await?;
+                }
+
                 // Delete the merged patchset
                 self.conn
                     .execute(
@@ -2024,11 +2072,7 @@ impl Database {
             }
 
             if let Some(bid) = baseline_id {
-                self.conn
-                    .execute(
-                        "UPDATE patchsets SET baseline_id = ? WHERE id = ?",
-                        libsql::params![bid, target_id],
-                    )
+                self.record_series_baseline(target_id, bid, Some(part_index))
                     .await?;
             }
 
@@ -2087,9 +2131,9 @@ impl Database {
         // No match found, create new patchset
         let mut rows = self.conn
             .query(
-                "INSERT INTO patchsets (thread_id, cover_letter_message_id, subject, author, date, total_parts, received_parts, status, parser_version, to_recipients, cc_recipients, subject_index, baseline_id, skip_filters, only_filters) 
-                 VALUES (?, ?, ?, ?, ?, ?, 0, 'Incomplete', ?, ?, ?, ?, ?, ?, ?) RETURNING id",
-                libsql::params![thread_id, cover_letter_message_id, subject, author, date, total_parts, parser_version, to, cc, part_index, baseline_id, skip_filters_json.clone(), only_filters_json.clone()],
+                "INSERT INTO patchsets (thread_id, cover_letter_message_id, subject, author, date, total_parts, received_parts, status, parser_version, to_recipients, cc_recipients, subject_index, baseline_id, baseline_part_index, skip_filters, only_filters)
+                 VALUES (?, ?, ?, ?, ?, ?, 0, 'Incomplete', ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                libsql::params![thread_id, cover_letter_message_id, subject, author, date, total_parts, parser_version, to, cc, part_index, baseline_id, baseline_id.map(|_| part_index), skip_filters_json.clone(), only_filters_json.clone()],
             )
             .await?;
 
@@ -6229,6 +6273,305 @@ mod tests {
         assert_eq!(
             ps1, ps2,
             "Patchset from B4 Relay devnull alias and real author email MUST merge"
+        );
+    }
+
+    /// Add one part of a series to the patchset identified by cover
+    /// letter "cover".
+    async fn add_part(db: &Database, thread_id: i64, part: u32, baseline: Option<i64>) -> i64 {
+        let msg = format!("msg_{}", part);
+        db.create_message(
+            &msg,
+            thread_id,
+            Some("cover"),
+            "author@example.com",
+            "Patch",
+            100,
+            "",
+            "",
+            "",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        db.create_patchset(
+            thread_id,
+            Some("cover"),
+            &msg,
+            &format!("[PATCH {}/3] Subject", part),
+            "author@example.com",
+            100,
+            3,
+            1,
+            "",
+            "",
+            None,
+            part,
+            baseline,
+            true,
+            None,
+            None,
+        )
+        .await
+        .unwrap()
+        .unwrap()
+    }
+
+    async fn patchset_baseline(db: &Database, id: i64) -> Option<i64> {
+        let mut rows = db
+            .conn
+            .query(
+                "SELECT baseline_id FROM patchsets WHERE id = ?",
+                libsql::params![id],
+            )
+            .await
+            .unwrap();
+        rows.next().await.unwrap().unwrap().get(0).ok()
+    }
+
+    #[tokio::test]
+    async fn test_baseline_comes_from_lowest_part() {
+        // A later part must not overwrite the first patch's parent,
+        // whatever order the parts arrive in.
+        for order in [[1u32, 2, 3], [3, 2, 1], [2, 3, 1]] {
+            let db = setup_db().await;
+            let thread_id = db.create_thread("root", "Subject", 100).await.unwrap();
+            db.create_message(
+                "cover",
+                thread_id,
+                None,
+                "author@example.com",
+                "Cover",
+                100,
+                "",
+                "",
+                "",
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+            let base = db
+                .create_baseline(None, None, Some("series_base"))
+                .await
+                .unwrap();
+            let after1 = db
+                .create_baseline(None, None, Some("patch1"))
+                .await
+                .unwrap();
+            let after2 = db
+                .create_baseline(None, None, Some("patch2"))
+                .await
+                .unwrap();
+
+            let mut ps_id = 0;
+            for part in order {
+                // Part N's parent is patch N-1; part 1's parent is the base.
+                let baseline = match part {
+                    1 => base,
+                    2 => after1,
+                    _ => after2,
+                };
+                ps_id = add_part(&db, thread_id, part, Some(baseline)).await;
+            }
+
+            assert_eq!(
+                patchset_baseline(&db, ps_id).await,
+                Some(base),
+                "arrival order {:?} must leave the first patch's parent as the baseline",
+                order
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_baseline_recorded_when_lowest_part_has_none() {
+        // A cover letter with no base-commit trailer wins the lowest part
+        // index while supplying no baseline.
+        let db = setup_db().await;
+        let thread_id = db.create_thread("root", "Subject", 100).await.unwrap();
+        db.create_message(
+            "cover",
+            thread_id,
+            None,
+            "author@example.com",
+            "Cover",
+            100,
+            "",
+            "",
+            "",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let base = db
+            .create_baseline(None, None, Some("series_base"))
+            .await
+            .unwrap();
+
+        let ps_id = add_part(&db, thread_id, 0, None).await;
+        assert_eq!(patchset_baseline(&db, ps_id).await, None);
+
+        let ps_id = add_part(&db, thread_id, 1, Some(base)).await;
+        assert_eq!(patchset_baseline(&db, ps_id).await, Some(base));
+    }
+
+    #[tokio::test]
+    async fn test_baseline_from_lowest_part_behind_a_cover_letter() {
+        let db = setup_db().await;
+        let thread_id = db.create_thread("root", "Subject", 100).await.unwrap();
+        db.create_message(
+            "cover",
+            thread_id,
+            None,
+            "author@example.com",
+            "Cover",
+            100,
+            "",
+            "",
+            "",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let base = db
+            .create_baseline(None, None, Some("series_base"))
+            .await
+            .unwrap();
+        let after1 = db
+            .create_baseline(None, None, Some("patch1"))
+            .await
+            .unwrap();
+
+        add_part(&db, thread_id, 0, None).await;
+        let ps_id = add_part(&db, thread_id, 2, Some(after1)).await;
+        assert_eq!(patchset_baseline(&db, ps_id).await, Some(after1));
+
+        let ps_id = add_part(&db, thread_id, 1, Some(base)).await;
+        assert_eq!(
+            patchset_baseline(&db, ps_id).await,
+            Some(base),
+            "patch 1 must replace the baseline a later part filled in"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_baseline_corrected_by_resubmitted_lowest_part() {
+        // Resubmitting a series is how a patchset that recorded the
+        // wrong baseline gets repaired.
+        let db = setup_db().await;
+        let thread_id = db.create_thread("root", "Subject", 100).await.unwrap();
+        db.create_message(
+            "cover",
+            thread_id,
+            None,
+            "author@example.com",
+            "Cover",
+            100,
+            "",
+            "",
+            "",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let wrong = db.create_baseline(None, None, Some("wrong")).await.unwrap();
+        let base = db
+            .create_baseline(None, None, Some("series_base"))
+            .await
+            .unwrap();
+
+        let ps_id = add_part(&db, thread_id, 1, Some(wrong)).await;
+        assert_eq!(patchset_baseline(&db, ps_id).await, Some(wrong));
+
+        let ps_id = add_part(&db, thread_id, 1, Some(base)).await;
+        assert_eq!(patchset_baseline(&db, ps_id).await, Some(base));
+    }
+
+    /// Add one part of a series as its own patchset, reached through the
+    /// author and time matching path rather than the cover letter lookup.
+    /// The parts share a git send-email message-id prefix, which is what
+    /// lets a later part match across threads and merge the two rows.
+    async fn add_unthreaded_part(
+        db: &Database,
+        thread_id: i64,
+        part: u32,
+        date: i64,
+        baseline: Option<i64>,
+    ) -> i64 {
+        let author = "Merge Author <merge@example.com>";
+        let msg = format!("20260731120000.4242-{}-merge@example.com", part);
+        let subject = format!("[PATCH {}/3] Subject", part);
+        db.create_message(
+            &msg, thread_id, None, author, &subject, date, "", "", "", None, None,
+        )
+        .await
+        .unwrap();
+
+        let id = db
+            .create_patchset(
+                thread_id, None, &msg, &subject, author, date, 3, 1, "", "", None, part, baseline,
+                true, None, None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        db.create_patch(id, &msg, part, "").await.unwrap();
+        id
+    }
+
+    #[tokio::test]
+    async fn test_baseline_survives_patchset_merge() {
+        // Two patchsets form because the parts land in separate threads
+        // more than a day apart. A part between them matches both, and the
+        // merge keeps the row created first -- the one holding the higher
+        // part's baseline.
+        let db = setup_db().await;
+        let thread_hi = db
+            .create_thread("root_hi", "Subject", 100_000)
+            .await
+            .unwrap();
+        let thread_lo = db
+            .create_thread("root_lo", "Subject", 250_000)
+            .await
+            .unwrap();
+        let thread_mid = db
+            .create_thread("root_mid", "Subject", 175_000)
+            .await
+            .unwrap();
+
+        let base = db
+            .create_baseline(None, None, Some("series_base"))
+            .await
+            .unwrap();
+        let after1 = db
+            .create_baseline(None, None, Some("patch1"))
+            .await
+            .unwrap();
+        let after2 = db
+            .create_baseline(None, None, Some("patch2"))
+            .await
+            .unwrap();
+
+        let ps_hi = add_unthreaded_part(&db, thread_hi, 2, 100_000, Some(after1)).await;
+        let ps_lo = add_unthreaded_part(&db, thread_lo, 1, 250_000, Some(base)).await;
+        assert_ne!(ps_hi, ps_lo, "the two parts must form separate patchsets");
+
+        let ps_id = add_unthreaded_part(&db, thread_mid, 3, 175_000, Some(after2)).await;
+        assert_eq!(ps_id, ps_hi, "the merge keeps the patchset created first");
+        assert_eq!(
+            patchset_baseline(&db, ps_id).await,
+            Some(base),
+            "the merged-away patchset's baseline must survive the merge"
         );
     }
 }
