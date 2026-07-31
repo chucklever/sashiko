@@ -129,4 +129,12 @@ impl AiProvider for LoggingProvider {
     async fn forget(&self, request: &AiRequest) {
         self.inner.forget(request).await
     }
+
+    fn llm_permits(&self) -> u32 {
+        self.inner.llm_permits()
+    }
+
+    async fn llm_permits_for(&self, request: &AiRequest) -> u32 {
+        self.inner.llm_permits_for(request).await
+    }
 }
