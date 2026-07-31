@@ -134,16 +134,12 @@ impl Reviewer {
         .await
         .expect("Failed to create AI provider");
 
-        // Mathematically derived from Sashiko's review pipeline stage composition:
-        // Stages 1-7 run in parallel (7 slots), while Stages 8-11 run sequentially (1 slot).
-        // On average, an active patch review consumes ~3 LLM slots over its execution lifetime.
-        // Thus, the global LLM request semaphore is scaled to (concurrency * 3) to fully
-        // saturate LLM capacity while gating local processes/worktrees strictly to `concurrency`.
-        let llm_concurrency = if concurrency < 2 {
-            1
-        } else {
-            std::cmp::max(1, concurrency * 3)
-        };
+        // Processes and worktrees are gated at `concurrency` itself; a review
+        // has more LLM requests than that in flight over its life, which is
+        // what LLM_SLOTS_PER_REVIEW accounts for.  A call draws
+        // AiProvider::llm_permits_for() of the result, not always one.
+        let llm_concurrency =
+            std::cmp::max(1, concurrency) * crate::ai::LLM_SLOTS_PER_REVIEW as usize;
 
         Self {
             db,
@@ -1894,7 +1890,19 @@ async fn run_review_tool_with_cmd(
                                                         ));
                                                     }
 
-                                                    let _permit = llm_semaphore_clone.acquire().await?;
+                                                    let queued_at = TokioInstant::now();
+                                                    let permit = llm_semaphore_clone
+                                                        .acquire_many(
+                                                            provider_clone.llm_permits_for(&req).await,
+                                                        )
+                                                        .await?;
+                                                    {
+                                                        // Waiting behind another review is not
+                                                        // this one's active time, the same reason
+                                                        // the quota wait above is given back.
+                                                        let mut d = deadline_clone.lock().unwrap();
+                                                        *d += queued_at.elapsed();
+                                                    }
 
                                                     match crate::ai::generate_content_traced(&*provider_clone, req.clone()).await {
                                                         Ok(resp) => {
@@ -1918,6 +1926,13 @@ async fn run_review_tool_with_cmd(
                                                                         local_transient_errors,
                                                                         backoff.as_secs_f64()
                                                                     );
+                                                                    // The call is over and its
+                                                                    // subprocess is gone, so back
+                                                                    // off without the permits;
+                                                                    // holding them here stalls
+                                                                    // every other review for the
+                                                                    // whole sleep.
+                                                                    drop(permit);
                                                                     tokio::time::sleep(backoff).await;
                                                                     continue;
                                                                 }

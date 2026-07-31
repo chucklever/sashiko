@@ -121,6 +121,23 @@ impl CachingAiProvider {
         let hash = hasher.finalize();
         hash.iter().map(|b| format!("{:02x}", b)).collect()
     }
+
+    /// Existence probe for the permit weight.  `generate_content` fetches the
+    /// payload itself, so read only the key here.
+    async fn is_cached(&self, request: &AiRequest) -> bool {
+        let hash = self.compute_cache_key(request);
+        let Ok(mut rows) = self
+            .conn
+            .query(
+                "SELECT 1 FROM response_cache WHERE request_hash = ?",
+                libsql::params![hash],
+            )
+            .await
+        else {
+            return false;
+        };
+        matches!(rows.next().await, Ok(Some(_)))
+    }
 }
 
 #[async_trait]
@@ -222,6 +239,23 @@ impl AiProvider for CachingAiProvider {
 
     fn cache_identity(&self) -> String {
         self.inner.cache_identity()
+    }
+
+    fn llm_permits(&self) -> u32 {
+        self.inner.llm_permits()
+    }
+
+    /// A hit answers out of sqlite and occupies none of what the inner
+    /// provider's weight reserves, so charging that weight would serialize a
+    /// warm replay as if it were spawning subprocesses.  The probe costs one
+    /// extra key lookup, and an entry reaped between it and the fetch
+    /// undercharges that one call rather than blocking it.
+    async fn llm_permits_for(&self, request: &AiRequest) -> u32 {
+        if self.is_cached(request).await {
+            1
+        } else {
+            self.inner.llm_permits()
+        }
     }
 
     fn cache_stats(&self) -> Option<CacheStats> {

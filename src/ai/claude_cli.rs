@@ -193,6 +193,10 @@ impl AiProvider for ClaudeCliProvider {
     fn cache_identity(&self) -> String {
         cache_identity_with(&self.model, &[("effort", self.effort.as_deref())])
     }
+
+    fn llm_permits(&self) -> u32 {
+        crate::ai::LOCAL_PERMITS_PER_CALL
+    }
 }
 
 fn parse_cli_output(raw: &str) -> Result<Value, ClaudeCliError> {

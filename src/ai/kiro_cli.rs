@@ -431,6 +431,10 @@ impl AiProvider for KiroCliProvider {
         // reaches the wire; it only budgets the prompt the cache hashes.
         crate::ai::cache_identity_with(&self.model, &[("agent", self.agent.as_deref())])
     }
+
+    fn llm_permits(&self) -> u32 {
+        crate::ai::LOCAL_PERMITS_PER_CALL
+    }
 }
 
 #[cfg(test)]

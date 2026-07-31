@@ -391,7 +391,45 @@ pub trait AiProvider: Send + Sync {
     fn cache_identity(&self) -> String {
         self.get_capabilities().model_name
     }
+
+    /// How many permits one call takes from the reviewer's LLM semaphore.
+    ///
+    /// That semaphore is sized in slots per concurrent review, one slot per
+    /// in-flight request, which is all a provider holding nothing but a
+    /// request costs.  A provider whose call occupies a resource on this host
+    /// for the call's whole duration -- a subprocess tree, a local daemon's
+    /// GPU -- costs far more than a slot assumes, so it returns
+    /// `LOCAL_PERMITS_PER_CALL` instead.
+    fn llm_permits(&self) -> u32 {
+        1
+    }
+
+    /// How many permits the call carrying `request` takes.
+    ///
+    /// Weight is a property of the provider, so this defers to
+    /// `llm_permits()`.  A provider that answers some requests without paying
+    /// what that weight assumes overrides it.
+    async fn llm_permits_for(&self, _request: &AiRequest) -> u32 {
+        self.llm_permits()
+    }
 }
+
+/// Permits the reviewer's LLM semaphore holds per concurrent review.
+///
+/// Derived from the review pipeline's stage composition: stages 1-7 run in
+/// parallel and stages 8-11 sequentially, which averages about three requests
+/// in flight over a review's life.
+pub const LLM_SLOTS_PER_REVIEW: u32 = 3;
+
+/// Permits one call takes when it occupies a resource on this host for its
+/// whole duration.  Equal to `LLM_SLOTS_PER_REVIEW` so that
+/// review.concurrency = 1 admits exactly one such call, which is what a host
+/// with one GPU or a few GiB of headroom can run at a time.
+pub const LOCAL_PERMITS_PER_CALL: u32 = 3;
+
+/// A weight above one review's slots could never be satisfied at
+/// review.concurrency = 1, where the acquire would block forever.
+const _: () = assert!(LOCAL_PERMITS_PER_CALL <= LLM_SLOTS_PER_REVIEW);
 
 /// Calls a provider inside a span carrying the request's context tag, then
 /// records what the call cost and what came back.
