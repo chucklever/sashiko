@@ -258,6 +258,10 @@ impl AiProvider for ClaudeCliProvider {
             ],
         )
     }
+
+    fn llm_permits(&self) -> u32 {
+        crate::ai::LOCAL_PERMITS_PER_CALL
+    }
 }
 
 fn parse_cli_output(raw: &str) -> Result<Value, ClaudeCliError> {
