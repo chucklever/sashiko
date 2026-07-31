@@ -454,6 +454,7 @@ fn decorate_provider(
         crate::ai::concurrency_limited_provider::ConcurrencyLimitedProvider::new(
             provider,
             llm_semaphore.clone(),
+            retry_budget.clone(),
         ),
     );
 

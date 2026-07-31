@@ -2079,16 +2079,6 @@ async fn run_review_tool_with_cmd(
     provider: Arc<dyn AiProvider>,
     llm_semaphore: Arc<Semaphore>,
 ) -> Result<serde_json::Value> {
-    // Cap concurrent model calls with the shared limiter instead of taking the
-    // semaphore by hand around each call. This also releases the permit as soon
-    // as the call returns, so a request that is backing off no longer occupies
-    // a slot while it sleeps.
-    let provider: Arc<dyn AiProvider> = Arc::new(
-        crate::ai::concurrency_limited_provider::ConcurrencyLimitedProvider::new(
-            provider,
-            llm_semaphore.clone(),
-        ),
-    );
     cmd.args([
         "--json",
         "--baseline",
@@ -2201,17 +2191,34 @@ async fn run_review_tool_with_cmd(
         TokioInstant::now() + Duration::from_secs(settings.review.timeout_seconds),
     ));
 
+    // A review is bounded by its activity deadline rather than an attempt
+    // count.  Time spent parked on the quota gate or queued behind another
+    // review for LLM permits is not this review's active time, so both
+    // limiters credit it back through the shared budget.
+    let retry_budget: Arc<dyn crate::ai::backoff_provider::RetryBudget> = Arc::new(
+        crate::ai::backoff_provider::DeadlineBudget::new(deadline.clone()),
+    );
+
+    // Cap concurrent model calls with the shared limiter instead of taking the
+    // semaphore by hand around each call.  A call draws
+    // AiProvider::llm_permits_for() permits, not always one.  The permits are
+    // released as soon as the call returns, so a request that is backing off
+    // no longer occupies them while it sleeps.
+    let provider: Arc<dyn AiProvider> = Arc::new(
+        crate::ai::concurrency_limited_provider::ConcurrencyLimitedProvider::new(
+            provider,
+            llm_semaphore.clone(),
+            Some(retry_budget.clone()),
+        ),
+    );
+
     // Retry rate-limited and transient failures with the shared limiter rather
-    // than an open-coded loop. A review is bounded by its activity deadline
-    // rather than an attempt count, and time spent waiting out a rate limit is
-    // credited back so it does not consume that budget.
+    // than an open-coded loop.
     let provider: Arc<dyn AiProvider> =
         Arc::new(crate::ai::backoff_provider::BackoffProvider::new(
             provider,
             quota_manager.clone(),
-            Some(Arc::new(crate::ai::backoff_provider::DeadlineBudget::new(
-                deadline.clone(),
-            ))),
+            Some(retry_budget),
         ));
 
     let mut spawned_tasks = Vec::new();
