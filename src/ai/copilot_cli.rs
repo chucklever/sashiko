@@ -120,6 +120,10 @@ impl AiProvider for CopilotCliProvider {
             context_window_size: 200_000,
         }
     }
+
+    fn llm_permits(&self) -> u32 {
+        crate::ai::LOCAL_PERMITS_PER_CALL
+    }
 }
 
 /// Parse the copilot CLI JSONL event stream.

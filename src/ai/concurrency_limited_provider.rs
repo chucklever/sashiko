@@ -28,22 +28,22 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::Semaphore;
 
-use crate::ai::{AiProvider, AiRequest, AiResponse, CacheStats, ProviderCapabilities};
+use crate::ai::backoff_provider::RetryBudget;
+use crate::ai::{
+    AiProvider, AiRequest, AiResponse, CacheStats, LLM_SLOTS_PER_REVIEW, ProviderCapabilities,
+};
 
-/// How many concurrent model calls a review `concurrency` allows.
+/// How many permits the LLM semaphore holds for a review `concurrency`.
 ///
-/// Derived from the shape of a review workflow: its analysis stages run as one
-/// parallel fan-out, whose width the planning stage chooses per patch, followed
-/// by consolidation stages that run sequentially. An active review therefore
-/// averages roughly three concurrent calls, so scaling to `concurrency * 3`
-/// saturates model capacity while worktrees and worker processes stay gated at
-/// `concurrency` itself. The factor is empirical rather than a bound the
-/// workflow guarantees.
-///
-/// A configuration asking for no parallelism stays fully serial rather than
-/// being widened.
+/// Processes and worktrees are gated at `concurrency` itself; a review has
+/// more LLM requests than that in flight over its life, which is what
+/// `LLM_SLOTS_PER_REVIEW` accounts for.  A call draws
+/// `AiProvider::llm_permits_for()` of the result, not always one: a provider
+/// that occupies a resource on this host for the call's whole duration weighs
+/// `LOCAL_PERMITS_PER_CALL`, so a serial configuration admits exactly one such
+/// call while API-backed providers still run a few requests wide.
 pub fn llm_permits(concurrency: usize) -> usize {
-    if concurrency < 2 { 1 } else { concurrency * 3 }
+    std::cmp::max(1, concurrency) * LLM_SLOTS_PER_REVIEW as usize
 }
 
 /// Limits concurrent model calls to the permits of a shared semaphore. All
@@ -51,25 +51,50 @@ pub fn llm_permits(concurrency: usize) -> usize {
 pub struct ConcurrencyLimitedProvider {
     inner: Arc<dyn AiProvider>,
     semaphore: Arc<Semaphore>,
+    /// Credited with the time a call spends queued for permits.  A task
+    /// waiting behind another review emits no output while the review's
+    /// deadline runs, so that wait is given back the same way the quota wait
+    /// is.
+    budget: Option<Arc<dyn RetryBudget>>,
 }
 
 impl ConcurrencyLimitedProvider {
     /// The semaphore is shared, so every provider built from it draws on the
     /// same pool of permits.
-    pub fn new(inner: Arc<dyn AiProvider>, semaphore: Arc<Semaphore>) -> Self {
-        Self { inner, semaphore }
+    pub fn new(
+        inner: Arc<dyn AiProvider>,
+        semaphore: Arc<Semaphore>,
+        budget: Option<Arc<dyn RetryBudget>>,
+    ) -> Self {
+        Self {
+            inner,
+            semaphore,
+            budget,
+        }
     }
 }
 
 #[async_trait]
 impl AiProvider for ConcurrencyLimitedProvider {
     async fn generate_content(&self, request: AiRequest) -> Result<AiResponse> {
+        let queued_at = tokio::time::Instant::now();
         let _permit = self
             .semaphore
-            .acquire()
+            .acquire_many(self.inner.llm_permits_for(&request).await)
             .await
             .map_err(|e| anyhow::anyhow!("concurrency semaphore closed: {e}"))?;
+        if let Some(budget) = &self.budget {
+            budget.credit_wait(queued_at.elapsed());
+        }
         self.inner.generate_content(request).await
+    }
+
+    fn llm_permits(&self) -> u32 {
+        self.inner.llm_permits()
+    }
+
+    async fn llm_permits_for(&self, request: &AiRequest) -> u32 {
+        self.inner.llm_permits_for(request).await
     }
 
     fn estimate_tokens(&self, request: &AiRequest) -> usize {
@@ -90,14 +115,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_llm_permits_keeps_a_serial_configuration_serial() {
-        // Widening these would defeat the point of asking for no parallelism,
-        // which is what someone does to stay under a provider's limits.
-        assert_eq!(llm_permits(0), 1);
-        assert_eq!(llm_permits(1), 1);
+    fn test_llm_permits_scales_with_concurrency() {
+        // A serial configuration gets one review's slots: exactly one
+        // LOCAL_PERMITS_PER_CALL call, or a few API-backed requests.
+        assert_eq!(llm_permits(0), LLM_SLOTS_PER_REVIEW as usize);
+        assert_eq!(llm_permits(1), LLM_SLOTS_PER_REVIEW as usize);
 
         // Above that, calls are allowed to run wider than the worktrees are.
-        assert_eq!(llm_permits(2), 6);
-        assert_eq!(llm_permits(16), 48);
+        assert_eq!(llm_permits(2), 2 * LLM_SLOTS_PER_REVIEW as usize);
+        assert_eq!(llm_permits(16), 16 * LLM_SLOTS_PER_REVIEW as usize);
     }
 }

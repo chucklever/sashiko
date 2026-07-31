@@ -175,6 +175,10 @@ impl AiProvider for DevinCliProvider {
             ],
         )
     }
+
+    fn llm_permits(&self) -> u32 {
+        crate::ai::LOCAL_PERMITS_PER_CALL
+    }
 }
 
 #[cfg(test)]

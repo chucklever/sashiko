@@ -401,6 +401,16 @@ impl AiProvider for OllamaClient {
         }
     }
 
+    /// A generation holds the daemon's GPU until it completes, so a second
+    /// request does not run alongside the first, it queues behind it and the
+    /// review's deadline runs while it waits.  Weight it like a subprocess: at
+    /// review.concurrency = 1 exactly one generation is in flight.  A base_url
+    /// pointing at a daemon with capacity to spare pays the same weight, so
+    /// raise concurrency there.
+    fn llm_permits(&self) -> u32 {
+        crate::ai::LOCAL_PERMITS_PER_CALL
+    }
+
     fn cache_identity(&self) -> String {
         // All four knobs reach translate_ollama_request() from this struct
         // rather than from the request the cache hashes.  max_tokens caps the

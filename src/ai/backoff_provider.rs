@@ -220,6 +220,14 @@ impl AiProvider for BackoffProvider {
     fn cache_stats(&self) -> Option<CacheStats> {
         self.inner.cache_stats()
     }
+
+    fn llm_permits(&self) -> u32 {
+        self.inner.llm_permits()
+    }
+
+    async fn llm_permits_for(&self, request: &AiRequest) -> u32 {
+        self.inner.llm_permits_for(request).await
+    }
 }
 
 #[cfg(test)]
