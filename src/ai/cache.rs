@@ -395,6 +395,14 @@ impl AiProvider for CachingAiProvider {
         self.inner.uses_workspace()
     }
 
+    fn llm_permits(&self) -> u32 {
+        self.inner.llm_permits()
+    }
+
+    async fn llm_permits_for(&self, request: &AiRequest) -> u32 {
+        self.inner.llm_permits_for(request).await
+    }
+
     fn cache_stats(&self) -> Option<CacheStats> {
         Some(CacheStats {
             hits_this_session: self.store.hits_this.load(Ordering::Relaxed),

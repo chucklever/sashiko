@@ -4104,6 +4104,9 @@ async fn run_review_tool_with_cmd_and_overrides(
     // credited back only when no sibling request is actively in flight.
     // Wrap concurrency and backoff decorators inside any outer response cache,
     // so cache hits do not acquire concurrency permits or consume rate-limit quota.
+    // A call draws AiProvider::llm_permits_for() permits, not always one.
+    // The permits are released as soon as the call returns, so a request that
+    // is backing off no longer occupies them while it sleeps.
     let quota_manager = quota_manager.clone();
     let deadline_budget = Arc::new(crate::ai::backoff_provider::DeadlineBudget::new(
         deadline.clone(),
