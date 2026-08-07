@@ -240,6 +240,12 @@ pub struct OpenAiCompatSettings {
     pub context_window_size: Option<usize>,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    /// Reasoning effort sent as the `reasoning_effort` request field. Valid
+    /// values per the OpenAI API: "minimal", "low", "medium", "high". Leave
+    /// unset for the model default; the field is then omitted entirely, which
+    /// is what a compatible endpoint that does not implement it needs.
+    #[serde(default)]
+    pub effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]

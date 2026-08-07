@@ -401,3 +401,9 @@ For OpenAI's own API with an API key (rather than a self-hosted
 compatible endpoint), use `docs/examples/Settings.openai-api.toml`:
 set `provider = "openai"`, `model = "gpt-5.6-sol"`, and export
 `OPENAI_API_KEY`.
+
+`effort` in `[ai.openai_compat]` sets reasoning effort on a reasoning
+model, sent as the `reasoning_effort` request field. It is omitted
+when unset, so a compatible endpoint that does not implement the
+field is unaffected until you set it; one that does not recognize it
+will reject the request outright rather than ignore it.
