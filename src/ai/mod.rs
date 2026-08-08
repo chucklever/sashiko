@@ -375,6 +375,14 @@ pub trait AiProvider: Send + Sync {
         None
     }
 
+    /// True when the provider runs a subprocess that reads the tree at
+    /// `AiRequest::workspace`.  A caller that shares one checkout among
+    /// concurrent reviews has to give each its own before setting the field,
+    /// so the answer decides how many worktrees a review run needs.
+    fn uses_workspace(&self) -> bool {
+        false
+    }
+
     /// Describes the configuration that shapes a response but travels outside
     /// the request: the model, and any provider knob such as a reasoning
     /// effort level. The response cache mixes this into its key, so changing
