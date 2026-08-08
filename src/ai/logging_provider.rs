@@ -118,6 +118,10 @@ impl AiProvider for LoggingProvider {
         self.inner.get_capabilities()
     }
 
+    fn uses_workspace(&self) -> bool {
+        self.inner.uses_workspace()
+    }
+
     fn cache_stats(&self) -> Option<CacheStats> {
         self.inner.cache_stats()
     }
