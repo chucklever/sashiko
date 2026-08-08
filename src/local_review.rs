@@ -567,12 +567,32 @@ async fn review_single_patch(
         });
     let max_attempts = worker_max_attempts(ai);
 
+    // No database, so the cache goes where the prompt bundle already lives.
+    let provider = crate::ai::create_provider_cached(ai, None)
+        .await
+        .context("Failed to create AI provider")?;
+    let provider = decorate_provider(provider, ai, llm_semaphore, quota, &retry_budget);
+
     // The checkout sits at the whole applied series in the apply path and at
     // the baseline in the review-commit path, so it has to be moved before
     // `set_workspace` may offer it.  It holds that revision for the retries
-    // below, which is why this runs once rather than per attempt.
+    // below, which is why this runs once rather than per attempt.  A provider
+    // that never reads the tree is offered nothing, and the checkout stays
+    // where it is.
     let mut workspace_ready = false;
-    if may_move_checkout && let Some(sha) = patch_shas.get(&p.index) {
+    if !may_move_checkout && provider.uses_workspace() {
+        warn!(
+            "Patch {}: the checkout is shared or not this process's own, so the \
+             CLI provider runs without a workspace and reads its own working \
+             directory instead of the revision under review; set \
+             review.concurrency = 1 to position the checkout",
+            p.index
+        );
+    }
+    if may_move_checkout
+        && provider.uses_workspace()
+        && let Some(sha) = patch_shas.get(&p.index)
+    {
         match worktree.reset_hard(sha).await {
             Ok(()) => workspace_ready = true,
             Err(e) => warn!(
@@ -601,11 +621,6 @@ async fn review_single_patch(
             );
         }
 
-        // No database, so the cache goes where the prompt bundle already lives.
-        let provider = crate::ai::create_provider_cached(ai, None)
-            .await
-            .context("Failed to create AI provider")?;
-        let provider = decorate_provider(provider, ai, llm_semaphore, quota, &retry_budget);
         let mut patch_files = Vec::new();
         if let Some(sha) = patch_shas.get(&p.index).filter(|s| is_safe_git_rev(s)) {
             let output = crate::git_cmd::in_dir_async(&worktree.path)
@@ -657,7 +672,7 @@ async fn review_single_patch(
         );
 
         let mut worker = Worker::new(
-            provider,
+            provider.clone(),
             std::sync::Arc::new(tools),
             prompts,
             WorkerConfig {

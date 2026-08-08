@@ -1345,9 +1345,20 @@ impl Reviewer {
             let mut handles = Vec::new();
             let baseline_ref_str = review_baseline;
 
+            // One checkout serves every review unless the provider reads the
+            // tree, in which case each review needs one of its own to move to
+            // the patch it is reviewing.  A review handed no worktree creates
+            // and owns one.
+            let shared_worktree = (!ctx.provider.uses_workspace()).then(|| worktree.path.clone());
+            if shared_worktree.is_none() {
+                info!(
+                    "Provider {} reads the worktree, so each review gets its own checkout",
+                    ctx.settings.ai.provider
+                );
+            }
+
             // Try concurrent processing using extra available permits in the semaphore
             if total_valid > 1 {
-                let worktree_path = worktree.path.clone();
                 while let Ok(permit) = ctx.semaphore.clone().try_acquire_owned() {
                     let queue = valid_jobs_queue.clone();
                     let aborted_clone = aborted.clone();
@@ -1357,7 +1368,7 @@ impl Reviewer {
                     let baseline_ref_clone = baseline_ref_str.to_string();
                     let baseline_id_clone = baseline_id;
                     let embargo_until_clone = patchset.embargo_until;
-                    let worktree_path_clone = worktree_path.clone();
+                    let worktree_path_clone = shared_worktree.clone();
 
                     let handle = tokio::spawn(async move {
                         let failures = Self::drain_review_queue(
@@ -1369,7 +1380,7 @@ impl Reviewer {
                             Some(baseline_id_clone),
                             &input_payload_clone,
                             prompts_hash_clone.as_deref(),
-                            &worktree_path_clone, // Reuse the single worktree!
+                            worktree_path_clone.as_deref(),
                             embargo_until_clone,
                         )
                         .await;
@@ -1389,7 +1400,7 @@ impl Reviewer {
                 }
             }
 
-            // Main worker loop uses the existing worktree
+            // Main worker loop shares the queue with the spawned workers
             patch_failures.extend(
                 Self::drain_review_queue(
                     &ctx,
@@ -1400,7 +1411,7 @@ impl Reviewer {
                     Some(baseline_id),
                     &input_payload,
                     prompts_hash,
-                    &worktree.path,
+                    shared_worktree.as_deref(),
                     patchset.embargo_until,
                 )
                 .await,
@@ -2510,7 +2521,7 @@ impl Reviewer {
         baseline_id: Option<i64>,
         input_payload: &Value,
         prompts_hash: Option<&str>,
-        worktree_path: &Path,
+        worktree_path: Option<&Path>,
         embargo_until: Option<i64>,
     ) -> Vec<String> {
         let mut failures = Vec::new();
@@ -2548,7 +2559,7 @@ impl Reviewer {
                 input_payload,
                 job.commit_sha,
                 prompts_hash,
-                Some(worktree_path),
+                worktree_path,
                 &job.diff,
                 embargo_until,
             )
