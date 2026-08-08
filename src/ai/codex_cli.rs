@@ -200,6 +200,10 @@ impl AiProvider for CodexCliProvider {
         }
     }
 
+    fn uses_workspace(&self) -> bool {
+        true
+    }
+
     fn cache_identity(&self) -> String {
         cache_identity_with(&self.model, &[("effort", self.effort.as_deref())])
     }
