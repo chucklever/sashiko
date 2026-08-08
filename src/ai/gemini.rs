@@ -698,6 +698,14 @@ impl AiProvider for StdioGeminiClient {
             context_window_size: 1_000_000,
         }
     }
+
+    /// The provider on the far side of the pipe is out of sight, so answer
+    /// for the one that reads the tree.  A daemon whose provider does not
+    /// shares its checkout with the review instead, and a shared checkout is
+    /// never offered.
+    fn uses_workspace(&self) -> bool {
+        true
+    }
 }
 
 // --- Translation Helpers ---

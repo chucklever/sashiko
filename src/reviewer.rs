@@ -772,9 +772,20 @@ impl Reviewer {
             let mut handles = Vec::new();
             let baseline_ref_str = resolution.as_str();
 
+            // One checkout serves every review unless the provider reads the
+            // tree, in which case each review needs one of its own to move to
+            // the patch it is reviewing.  A review handed no worktree creates
+            // and owns one.
+            let shared_worktree = (!ctx.provider.uses_workspace()).then(|| worktree.path.clone());
+            if shared_worktree.is_none() {
+                info!(
+                    "Provider {} reads the worktree, so each review gets its own checkout",
+                    ctx.settings.ai.provider
+                );
+            }
+
             // Try concurrent processing using extra available permits in the semaphore
             if total_valid > 1 {
-                let worktree_path = worktree.path.clone();
                 while let Ok(permit) = ctx.semaphore.clone().try_acquire_owned() {
                     let queue = valid_jobs_queue.clone();
                     let ctx_clone = ctx.clone();
@@ -783,7 +794,7 @@ impl Reviewer {
                     let baseline_ref_clone = baseline_ref_str.to_string();
                     let baseline_id_clone = baseline_id;
                     let embargo_until_clone = patchset.embargo_until;
-                    let worktree_path_clone = worktree_path.clone();
+                    let worktree_path_clone = shared_worktree.clone();
 
                     let handle = tokio::spawn(async move {
                         let mut failed = 0;
@@ -815,7 +826,7 @@ impl Reviewer {
                                     &input_payload_clone,
                                     job.commit_sha,
                                     prompts_hash_clone.as_deref(),
-                                    Some(&worktree_path_clone), // Reuse the single worktree!
+                                    worktree_path_clone.as_deref(),
                                     &job.diff,
                                     embargo_until_clone,
                                 )
@@ -848,8 +859,9 @@ impl Reviewer {
                 }
             }
 
-            // Main worker loop uses the existing worktree
+            // Main worker loop shares the queue with the spawned workers
             let mut main_failed = 0;
+            let main_worktree_path = shared_worktree.as_deref();
             loop {
                 if ctx
                     .db
@@ -878,7 +890,7 @@ impl Reviewer {
                         &input_payload,
                         job.commit_sha,
                         prompts_hash,
-                        Some(&worktree.path),
+                        main_worktree_path,
                         &job.diff,
                         patchset.embargo_until,
                     )

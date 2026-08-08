@@ -89,11 +89,14 @@ impl CachingAiProvider {
         let mut val = serde_json::to_value(request).unwrap_or_default();
         // Strip nondeterministic fields.  A worktree path carries a random
         // suffix, so keying on it would miss every re-review.  Whether one
-        // was offered at all still belongs in the key: a provider that read
-        // the tree saw code that a provider without it did not.
+        // was offered at all still belongs in the key when the provider
+        // reads the tree: it saw code that a run without one did not.  A
+        // provider that never reads it answers the same either way.
         if let serde_json::Value::Object(ref mut map) = val {
             map.remove("context_tag");
-            if let Some(workspace) = map.get_mut("workspace") {
+            if !self.inner.uses_workspace() {
+                map.remove("workspace");
+            } else if let Some(workspace) = map.get_mut("workspace") {
                 *workspace = serde_json::Value::Bool(true);
             }
         }
@@ -205,6 +208,10 @@ impl AiProvider for CachingAiProvider {
         self.inner.cache_identity()
     }
 
+    fn uses_workspace(&self) -> bool {
+        self.inner.uses_workspace()
+    }
+
     fn cache_stats(&self) -> Option<CacheStats> {
         Some(CacheStats {
             hits_this_session: self.hits_this.load(Ordering::Relaxed),
@@ -220,7 +227,8 @@ mod tests {
     use super::*;
     use crate::ai::{AiMessage, AiRole};
 
-    struct StubProvider;
+    /// Stands in for a provider that reads the tree when `true`.
+    struct StubProvider(bool);
 
     #[async_trait]
     impl AiProvider for StubProvider {
@@ -233,6 +241,10 @@ mod tests {
                 model_name: "stub".to_string(),
                 context_window_size: 1,
             }
+        }
+
+        fn uses_workspace(&self) -> bool {
+            self.0
         }
     }
 
@@ -260,7 +272,7 @@ mod tests {
     /// a random suffix and must stay out of the key.
     #[tokio::test]
     async fn workspace_presence_keys_the_cache_but_the_path_does_not() {
-        let cache = CachingAiProvider::new(Arc::new(StubProvider), ":memory:", 7)
+        let cache = CachingAiProvider::new(Arc::new(StubProvider(true)), ":memory:", 7)
             .await
             .expect("in-memory cache");
 
@@ -270,5 +282,20 @@ mod tests {
 
         assert_eq!(first, second);
         assert_ne!(without, first);
+    }
+
+    /// A provider that never reads the tree gives the same answer with a
+    /// workspace or without, so an offer it ignores must not miss the entry
+    /// recorded when none was made.
+    #[tokio::test]
+    async fn a_workspace_the_provider_ignores_stays_out_of_the_key() {
+        let cache = CachingAiProvider::new(Arc::new(StubProvider(false)), ":memory:", 7)
+            .await
+            .expect("in-memory cache");
+
+        let without = cache.compute_cache_key(&request(None));
+        let with = cache.compute_cache_key(&request(Some("/tmp/sashiko-worktree-a1b2")));
+
+        assert_eq!(without, with);
     }
 }
