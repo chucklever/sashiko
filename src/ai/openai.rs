@@ -23,6 +23,7 @@ use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -179,6 +180,13 @@ pub struct OpenAiCompatClient {
     max_tokens: u32,
     provider_type: OpenAiProviderType,
     effort: Option<String>,
+    /// Set once the endpoint has refused the temperature field for this
+    /// model.  A reasoning model samples at a fixed temperature of 1 and
+    /// answers any other value with a 400; the planning phases ask for
+    /// 0.0, so without this the review dies before the model sees the
+    /// patch.  Learned from the reply rather than the model name so a
+    /// new model or a compatible endpoint needs no list to maintain.
+    temperature_unsupported: AtomicBool,
     client: Client,
 }
 
@@ -219,6 +227,7 @@ impl OpenAiCompatClient {
             max_tokens,
             provider_type,
             effort,
+            temperature_unsupported: AtomicBool::new(false),
             client,
         })
     }
@@ -286,9 +295,27 @@ impl OpenAiCompatClient {
         }
     }
 
+    /// Whether an error body is the OpenAI API refusing the temperature
+    /// field for this model.  The API names the field in param, so the
+    /// message text is never consulted.  code is not consulted either:
+    /// /v1/chat/completions sends unsupported_value where /v1/responses
+    /// sends null for the same refusal.
+    fn refuses_temperature(error_text: &str) -> bool {
+        serde_json::from_str::<Value>(error_text)
+            .ok()
+            .map(|body| {
+                body["error"]["type"] == "invalid_request_error"
+                    && body["error"]["param"] == "temperature"
+            })
+            .unwrap_or(false)
+    }
+
     fn build_request(&self, request: AiRequest) -> Result<OpenAiRequest> {
         let mut openai_req = translate_ai_request(request, self.max_tokens, self.provider_type)?;
         openai_req.model = self.model.clone();
+        if self.temperature_unsupported.load(Ordering::Relaxed) {
+            openai_req.temperature = None;
+        }
         // Omitted unless configured: an endpoint that does not implement
         // reasoning_effort rejects the whole request over an unknown field.
         openai_req.reasoning_effort = self.effort.clone();
@@ -581,10 +608,26 @@ impl AiProvider for OpenAiCompatClient {
     async fn generate_content(&self, request: AiRequest) -> Result<AiResponse> {
         tracing::info!("Sending OpenAI request...");
 
-        let openai_req = self.build_request(request)?;
+        let mut openai_req = self.build_request(request)?;
 
         let resp_body = serde_json::to_value(&openai_req)?;
-        let resp = self.post_request(&resp_body).await?;
+        let resp = match self.post_request(&resp_body).await {
+            Err(OpenAiCompatError::ApiError(status, ref body))
+                if status == reqwest::StatusCode::BAD_REQUEST
+                    && openai_req.temperature.is_some()
+                    && Self::refuses_temperature(body) =>
+            {
+                tracing::info!(
+                    "{} takes only its default temperature; resending without the field",
+                    self.model
+                );
+                self.temperature_unsupported.store(true, Ordering::Relaxed);
+                openai_req.temperature = None;
+                let resp_body = serde_json::to_value(&openai_req)?;
+                self.post_request(&resp_body).await?
+            }
+            other => other?,
+        };
         translate_ai_response(resp)
     }
 
@@ -1535,6 +1578,168 @@ mod tests {
 
         let json = serde_json::to_value(&built).unwrap();
         assert_eq!(json["reasoning_effort"], "high");
+    }
+
+    fn test_client_for_model(model: &str) -> OpenAiCompatClient {
+        OpenAiCompatClient::new(
+            "https://api.openai.com/v1".to_string(),
+            OpenAiProviderType::OpenAi,
+            model.to_string(),
+            400_000,
+            65536,
+            60,
+            None,
+        )
+        .unwrap()
+    }
+
+    fn request_at_zero_temperature() -> AiRequest {
+        let mut request = sample_request();
+        request.temperature = Some(0.0);
+        request
+    }
+
+    /// The body gpt-6-luna and gpt-5.6-sol returned for temperature 0.0
+    /// on 2026-09-24, from /v1/chat/completions and from /v1/responses.
+    const TEMPERATURE_REFUSED: &str = r#"{
+  "error": {
+    "message": "Unsupported value: 'temperature' does not support 0.0 with this model. Only the default (1) value is supported.",
+    "type": "invalid_request_error",
+    "param": "temperature",
+    "code": "unsupported_value"
+  }
+}"#;
+    const TEMPERATURE_REFUSED_RESPONSES: &str = r#"{
+  "error": {
+    "message": "Unsupported parameter: 'temperature' is not supported with this model.",
+    "type": "invalid_request_error",
+    "param": "temperature",
+    "code": null
+  }
+}"#;
+
+    #[test]
+    fn refuses_temperature_reads_type_and_param() {
+        assert!(OpenAiCompatClient::refuses_temperature(TEMPERATURE_REFUSED));
+        assert!(OpenAiCompatClient::refuses_temperature(
+            TEMPERATURE_REFUSED_RESPONSES
+        ));
+
+        // Another unsupported field, and another kind of error naming the
+        // temperature field, both keep the value in the request.
+        let other_param =
+            TEMPERATURE_REFUSED.replace(r#""param": "temperature""#, r#""param": "top_p""#);
+        assert!(!OpenAiCompatClient::refuses_temperature(&other_param));
+        let other_type = TEMPERATURE_REFUSED.replace(
+            r#""type": "invalid_request_error""#,
+            r#""type": "server_error""#,
+        );
+        assert!(!OpenAiCompatClient::refuses_temperature(&other_type));
+
+        assert!(!OpenAiCompatClient::refuses_temperature(""));
+        assert!(!OpenAiCompatClient::refuses_temperature(
+            "Unsupported value: 'temperature'"
+        ));
+    }
+
+    #[test]
+    fn temperature_kept_until_the_endpoint_refuses_it() {
+        let client = test_client_for_model("gpt-6-luna");
+        let built = client.build_request(request_at_zero_temperature()).unwrap();
+        assert_eq!(built.temperature, Some(0.0));
+
+        client
+            .temperature_unsupported
+            .store(true, Ordering::Relaxed);
+        let built = client.build_request(request_at_zero_temperature()).unwrap();
+        assert_eq!(built.temperature, None);
+        let json = serde_json::to_value(&built).unwrap();
+        assert!(json.get("temperature").is_none());
+    }
+
+    /// Serve one canned reply per connection, in order, and record each
+    /// request body.
+    async fn serve_replies(
+        replies: Vec<(u16, String)>,
+    ) -> (String, std::sync::Arc<std::sync::Mutex<Vec<Value>>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorder = seen.clone();
+        tokio::spawn(async move {
+            for (status, body) in replies {
+                let (mut sock, _) = listener.accept().await.unwrap();
+                let mut buf = vec![0u8; 65536];
+                let mut n = 0;
+                let request = loop {
+                    n += sock.read(&mut buf[n..]).await.unwrap();
+                    let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    if let Some((head, tail)) = text.split_once("\r\n\r\n") {
+                        let len: usize = head
+                            .lines()
+                            .find_map(|l| l.strip_prefix("content-length: "))
+                            .and_then(|v| v.trim().parse().ok())
+                            .unwrap_or(0);
+                        if tail.len() >= len {
+                            break tail.to_string();
+                        }
+                    }
+                };
+                recorder
+                    .lock()
+                    .unwrap()
+                    .push(serde_json::from_str(&request).unwrap());
+                let reply = format!(
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                sock.write_all(reply.as_bytes()).await.unwrap();
+                sock.shutdown().await.unwrap();
+            }
+        });
+        (format!("http://{addr}/v1"), seen)
+    }
+
+    const COMPLETION: &str = r#"{"id":"x","object":"chat.completion","created":0,"model":"gpt-6-luna","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
+
+    #[tokio::test]
+    async fn temperature_refusal_resends_without_the_field() {
+        let (base_url, seen) = serve_replies(vec![
+            (400, TEMPERATURE_REFUSED.to_string()),
+            (200, COMPLETION.to_string()),
+        ])
+        .await;
+        let client = test_client(&base_url, 65536, None);
+
+        let response = client
+            .generate_content(request_at_zero_temperature())
+            .await
+            .unwrap();
+        assert_eq!(response.content.as_deref(), Some("ok"));
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[0]["temperature"], 0.0);
+        assert!(seen[1].get("temperature").is_none());
+        assert!(client.temperature_unsupported.load(Ordering::Relaxed));
+    }
+
+    #[tokio::test]
+    async fn other_bad_request_is_not_resent() {
+        let refused_top_p =
+            TEMPERATURE_REFUSED.replace(r#""param": "temperature""#, r#""param": "top_p""#);
+        let (base_url, seen) = serve_replies(vec![(400, refused_top_p)]).await;
+        let client = test_client(&base_url, 65536, None);
+
+        assert!(
+            client
+                .generate_content(request_at_zero_temperature())
+                .await
+                .is_err()
+        );
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert!(!client.temperature_unsupported.load(Ordering::Relaxed));
     }
 
     #[test]
