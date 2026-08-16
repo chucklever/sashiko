@@ -127,6 +127,7 @@ Settings for the OpenAI providers (`provider = "openai"` or `provider = "openai-
 | `context_window_size` | integer | model-derived | Context window size. `128000` for most models. |
 | `max_tokens` | integer | `4096` | Max output tokens per response. With `provider = "openai"` it is sent as `max_completion_tokens`, which bounds reasoning tokens as well as the reply. |
 | `effort` | string | -- | Reasoning effort: `"minimal"`, `"low"`, `"medium"`, `"high"`. Sent as the `reasoning_effort` request field, and omitted entirely when unset. Applies to both `provider = "openai"` and `provider = "openai-compatible"`; a compatible endpoint that does not implement the field rejects the request, so leave it unset there. |
+| `api` | string | `"chat"` | Which OpenAI endpoint to speak: `"chat"` for `/v1/chat/completions`, or `"responses"` for `/v1/responses`. Only OpenAI's own API serves the latter, and it is the only endpoint that accepts function tools and a reasoning effort in the same request. |
 
 #### `[ai.kiro_cli]`
 

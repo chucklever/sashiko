@@ -407,3 +407,28 @@ model, sent as the `reasoning_effort` request field. It is omitted
 when unset, so a compatible endpoint that does not implement the
 field is unaffected until you set it; one that does not recognize it
 will reject the request outright rather than ignore it.
+
+`api` in the same table picks the endpoint. It defaults to `"chat"`,
+which is `/v1/chat/completions` and the only endpoint a third-party
+compatible provider serves. Set it to `"responses"` to reach OpenAI's
+`/v1/responses` instead, as `docs/examples/Settings.openai-responses.toml`
+does:
+
+```toml
+[ai]
+provider = "openai"
+model = "gpt-5.4"
+
+[ai.openai_compat]
+api = "responses"
+max_tokens = 65536
+effort = "medium"
+```
+
+Two things need that endpoint. A gpt-5.6 model rejects any chat
+completion carrying function tools unless `effort` is `"none"`, so the
+review stages that explore the code run without reasoning; the same
+request over `/v1/responses` is accepted. And model access is granted
+per endpoint, so a project can be told it has no access to the gpt-5.4
+family on chat completions while `/v1/responses` answers normally.
+Everything else in `[ai.openai_compat]` applies to both.
