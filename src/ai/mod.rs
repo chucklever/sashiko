@@ -281,7 +281,7 @@ pub fn classify_ai_error(error: &anyhow::Error) -> AiErrorClass {
     if let Some(e) = error.downcast_ref::<RemoteAiError>() {
         return e.ai_error_class();
     }
-    if let Some(e) = error.downcast_ref::<openai::OpenAiCompatError>() {
+    if let Some(e) = error.downcast_ref::<openai_common::OpenAiCompatError>() {
         return e.ai_error_class();
     }
     if let Some(e) = error.downcast_ref::<claude::ClaudeError>() {
@@ -761,6 +761,7 @@ pub mod gemini;
 pub mod kiro_cli;
 pub mod ollama;
 pub mod openai;
+pub mod openai_common;
 pub mod proxy;
 pub mod quota;
 pub mod session;
@@ -1450,7 +1451,7 @@ mod tests {
     #[test]
     fn test_classify_ai_error_provider_cascade() {
         assert_ai_error_class(
-            openai::OpenAiCompatError::RateLimitExceeded(Duration::from_secs(7)),
+            openai_common::OpenAiCompatError::RateLimitExceeded(Duration::from_secs(7)),
             AiErrorClass::RateLimit {
                 retry_after: Duration::from_secs(7),
             },
