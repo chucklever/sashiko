@@ -1,4 +1,4 @@
-use crate::git_ops::ensure_remote;
+use crate::git_ops::{FetchOutcome, ensure_remote};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -52,6 +52,12 @@ impl GitSyncWorker {
 
         info!("GitSyncWorker: Found {} remotes to check.", remotes.len());
 
+        let mut fetched = 0usize;
+        let mut skipped = 0usize;
+        let mut stale = 0usize;
+        let mut failed = 0usize;
+        let mut first_failure = String::new();
+
         for remote in remotes {
             // Get URL for the remote
             let url_output = Command::new("git")
@@ -61,10 +67,13 @@ impl GitSyncWorker {
                 .await?;
 
             if !url_output.status.success() {
-                warn!(
-                    "GitSyncWorker: Failed to get URL for remote {}. Skipping.",
-                    remote
-                );
+                let stderr = String::from_utf8_lossy(&url_output.stderr);
+                let message = format!("Failed to get URL for remote {}: {}", remote, stderr.trim());
+                warn!("GitSyncWorker: {}", message);
+                failed += 1;
+                if first_failure.is_empty() {
+                    first_failure = message;
+                }
                 continue;
             }
 
@@ -74,12 +83,42 @@ impl GitSyncWorker {
 
             // Check if it's time to fetch and fetch if necessary
             // force_fetch=false so we respect the 4h/24h intervals in ensure_remote
-            if let Err(e) = ensure_remote(&self.repo_path, remote, &url, false).await {
-                error!("GitSyncWorker: Failed to sync remote {}: {}", remote, e);
+            match ensure_remote(&self.repo_path, remote, &url, false).await {
+                Ok(FetchOutcome::Fetched) => fetched += 1,
+                Ok(FetchOutcome::Skipped) | Ok(FetchOutcome::BackedOff) => skipped += 1,
+                Ok(FetchOutcome::StaleLocalRef(message)) => {
+                    stale += 1;
+                    if first_failure.is_empty() {
+                        first_failure = message;
+                    }
+                }
+                Err(e) => {
+                    error!("GitSyncWorker: Failed to sync remote {}: {}", remote, e);
+                    failed += 1;
+                    if first_failure.is_empty() {
+                        first_failure = e.to_string();
+                    }
+                }
             }
         }
 
-        info!("GitSyncWorker: Sync cycle complete.");
+        // A cycle that tries several remotes and reaches none is a
+        // condition of the repository or the network rather than of
+        // any one remote, and the per-remote errors above do not say
+        // so anywhere.  One remote tried and lost is that remote's
+        // condition, and its own line already names it.
+        let tried = fetched + stale + failed;
+        if fetched == 0 && tried > 1 {
+            error!(
+                "GitSyncWorker: Sync cycle fetched nothing: {} skipped, {} stale, {} failed. First failure: {}",
+                skipped, stale, failed, first_failure
+            );
+        } else {
+            info!(
+                "GitSyncWorker: Sync cycle complete: {} fetched, {} skipped, {} stale, {} failed.",
+                fetched, skipped, stale, failed
+            );
+        }
         Ok(())
     }
 }
