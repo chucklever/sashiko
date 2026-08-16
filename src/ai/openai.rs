@@ -287,9 +287,24 @@ impl OpenAiCompatClient {
         }
     }
 
+    /// A reasoning model samples at a fixed temperature of 1.  Sending any
+    /// other value earns a 400 that names the field, so the planning phases,
+    /// which ask for 0.0 to keep their JSON answers stable, kill the review
+    /// before the model sees the patch.  Dropping the field leaves the model
+    /// at the only temperature it accepts.
+    fn rejects_temperature(model: &str) -> bool {
+        model.starts_with("gpt-5")
+            || model.starts_with("o1")
+            || model.starts_with("o3")
+            || model.starts_with("o4")
+    }
+
     fn build_request(&self, request: AiRequest) -> Result<OpenAiRequest> {
         let mut openai_req = translate_ai_request(request, self.max_tokens, self.provider_type)?;
         openai_req.model = self.model.clone();
+        if Self::rejects_temperature(&self.model) {
+            openai_req.temperature = None;
+        }
         // Omitted unless configured: an endpoint that does not implement
         // reasoning_effort rejects the whole request over an unknown field.
         openai_req.reasoning_effort = self.effort.clone();
@@ -1609,6 +1624,47 @@ mod tests {
 
         let json = serde_json::to_value(&built).unwrap();
         assert_eq!(json["reasoning_effort"], "high");
+    }
+
+    fn test_client_for_model(model: &str) -> OpenAiCompatClient {
+        OpenAiCompatClient::new(
+            "https://api.openai.com/v1".to_string(),
+            OpenAiProviderType::OpenAi,
+            model.to_string(),
+            400_000,
+            65536,
+            60,
+            None,
+        )
+        .unwrap()
+    }
+
+    fn request_at_zero_temperature() -> AiRequest {
+        let mut request = sample_request();
+        request.temperature = Some(0.0);
+        request
+    }
+
+    #[test]
+    fn reasoning_model_drops_temperature() {
+        for model in ["gpt-5.6-sol", "gpt-5.1", "o1-mini", "o3", "o4-mini"] {
+            let built = test_client_for_model(model)
+                .build_request(request_at_zero_temperature())
+                .unwrap();
+            assert_eq!(built.temperature, None, "{model} kept temperature");
+
+            let json = serde_json::to_value(&built).unwrap();
+            assert!(
+                json.get("temperature").is_none(),
+                "{model} sent temperature"
+            );
+        }
+
+        // A model that samples keeps the value it was given.
+        let built = test_client_for_model("gpt-4o")
+            .build_request(request_at_zero_temperature())
+            .unwrap();
+        assert_eq!(built.temperature, Some(0.0));
     }
 
     #[test]
