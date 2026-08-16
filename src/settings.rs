@@ -501,6 +501,11 @@ pub struct OpenAiCompatSettings {
     /// off by default.
     #[serde(default)]
     pub send_reasoning_content: bool,
+    /// Which OpenAI endpoint to speak: "chat" for /v1/chat/completions,
+    /// the default and the only one a third-party compatible endpoint
+    /// serves, or "responses" for OpenAI's /v1/responses.
+    #[serde(default)]
+    pub api: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
