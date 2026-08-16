@@ -22,3 +22,4 @@ max_tokens = 65536             # output cap, sent as max_completion_tokens
 effort = "medium"              # reasoning_effort: "minimal", "low", "medium", "high"
 # base_url = "https://api.openai.com/v1/chat/completions"  # auto-derived from model; set only to override
 # context_window_size = 128000   # generic fallback for gpt-5.x; raise to the model's real window
+# api = "responses"              # the other endpoint; see Settings.openai-responses.toml
