@@ -4678,10 +4678,12 @@ echo '{"patchset_id": 1, "patches": [{"index": 1, "status": "applied"}]}'
         settings.server.public_base_url = Some("https://sashiko.dev".to_string());
         settings.review.email_policy_path = policy_path.to_str().unwrap().to_string();
         settings.smtp = Some(crate::settings::SmtpSettings {
-            server: "localhost".to_string(),
-            port: 25,
+            transport: crate::settings::MailTransport::Smtp,
+            server: Some("localhost".to_string()),
+            port: Some(25),
             username: None,
             password: None,
+            sendmail_path: None,
             sender_address: "bot@sashiko.dev".to_string(),
             reply_to: None,
             dry_run: false, // We want 'Pending' status to be able to query it easily if needed, or just query it anyway.
@@ -5003,10 +5005,12 @@ inline review content 4\n\n-- \nSashiko AI review · https://sashiko.dev/#/patch
         settings.server.public_base_url = Some("https://sashiko.dev".to_string());
         settings.review.email_policy_path = policy_path.to_str().unwrap().to_string();
         settings.smtp = Some(crate::settings::SmtpSettings {
-            server: "localhost".to_string(),
-            port: 25,
+            transport: crate::settings::MailTransport::Smtp,
+            server: Some("localhost".to_string()),
+            port: Some(25),
             username: None,
             password: None,
+            sendmail_path: None,
             sender_address: "bot@sashiko.dev".to_string(),
             reply_to: None,
             dry_run: false,
