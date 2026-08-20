@@ -60,16 +60,7 @@ impl EmailWorker {
         }
     }
 
-    async fn send_email(&self, email_row: &crate::db::EmailOutboxRow) -> anyhow::Result<()> {
-        if self.settings.dry_run {
-            info!(
-                "DRY RUN: Would have sent email to {}, cc {}, subject '{}'",
-                email_row.to_addresses, email_row.cc_addresses, email_row.subject
-            );
-            info!("DRY RUN Body:\n{}", email_row.body);
-            return Ok(());
-        }
-
+    fn build_message(&self, email_row: &crate::db::EmailOutboxRow) -> anyhow::Result<Message> {
         let mut builder = Message::builder()
             .from(self.settings.sender_address.parse()?)
             .subject(&email_row.subject);
@@ -113,9 +104,22 @@ impl EmailWorker {
             builder = builder.references(refs.join(" "));
         }
 
-        let msg = builder
+        Ok(builder
             .header(ContentType::TEXT_PLAIN)
-            .body(email_row.body.clone())?;
+            .body(email_row.body.clone())?)
+    }
+
+    async fn send_email(&self, email_row: &crate::db::EmailOutboxRow) -> anyhow::Result<()> {
+        if self.settings.dry_run {
+            info!(
+                "DRY RUN: Would have sent email to {}, cc {}, subject '{}'",
+                email_row.to_addresses, email_row.cc_addresses, email_row.subject
+            );
+            info!("DRY RUN Body:\n{}", email_row.body);
+            return Ok(());
+        }
+
+        let msg = self.build_message(email_row)?;
 
         let mut mailer_builder =
             AsyncSmtpTransport::<Tokio1Executor>::relay(&self.settings.server)?
