@@ -1,7 +1,7 @@
-use crate::settings::SmtpSettings;
+use crate::settings::{MailTransport, SmtpSettings};
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::authentication::Credentials;
-use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+use lettre::{AsyncSendmailTransport, AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Duration;
@@ -12,6 +12,11 @@ const SMTP_SOCKET_TIMEOUT: Duration = Duration::from_secs(30);
 const SMTP_SEND_TIMEOUT: Duration = Duration::from_secs(60);
 const SMTP_MAX_ATTEMPTS: u32 = 3;
 const SMTP_RETRY_BASE_DELAY: Duration = Duration::from_secs(2);
+
+/// How long one sendmail invocation may run. The same bound lettre
+/// applies to an SMTP session, since both wait on a peer that has
+/// nothing left to say once it has accepted the message.
+const SENDMAIL_TIMEOUT: Duration = Duration::from_secs(60);
 
 pub struct EmailWorker {
     db: Arc<crate::db::Database>,
@@ -44,6 +49,29 @@ impl EmailWorker {
     fn record_heartbeat(&self) {
         if let Some(hb) = &self.heartbeat {
             hb.store(chrono::Utc::now().timestamp(), Ordering::Relaxed);
+        }
+    }
+
+    /// Reports a sendmail binary that the configuration names but the
+    /// host lacks. Startup refuses to run on it: the worker would
+    /// spawn-fail every message and mark each one Failed, which is
+    /// terminal, whereas mail left Pending survives until the path is
+    /// corrected. A dry run never spawns the binary, so it is exempt.
+    pub fn check_sendmail_path(settings: &SmtpSettings) -> Result<(), String> {
+        if settings.dry_run || settings.transport != MailTransport::Sendmail {
+            return Ok(());
+        }
+
+        // A directory or a file without an execute bit exists but
+        // spawn-fails all the same, so test for what spawn needs.
+        use std::os::unix::fs::PermissionsExt;
+        let path = settings.sendmail_command();
+        match std::fs::metadata(path) {
+            Ok(meta) if meta.is_file() && meta.permissions().mode() & 0o111 != 0 => Ok(()),
+            _ => Err(format!(
+                "smtp.sendmail_path \"{}\" is not an executable file",
+                path
+            )),
         }
     }
 
@@ -147,12 +175,26 @@ impl EmailWorker {
 
         let msg = build_email_message(&self.settings, email_row)?;
 
-        let mut mailer_builder =
-            AsyncSmtpTransport::<Tokio1Executor>::relay(&self.settings.server)?
-                .port(self.settings.port)
-                .timeout(Some(SMTP_SOCKET_TIMEOUT));
+        match self.settings.transport {
+            MailTransport::Smtp => Self::send_via_smtp(&self.settings, msg).await,
+            MailTransport::Sendmail => Self::send_via_sendmail(&self.settings, msg).await,
+        }
+    }
 
-        if let (Some(user), Some(pass)) = (&self.settings.username, &self.settings.password) {
+    async fn send_via_smtp(settings: &SmtpSettings, msg: Message) -> anyhow::Result<()> {
+        let server = settings
+            .server
+            .as_deref()
+            .ok_or_else(|| anyhow::anyhow!("smtp.server is not configured"))?;
+        let port = settings
+            .port
+            .ok_or_else(|| anyhow::anyhow!("smtp.port is not configured"))?;
+
+        let mut mailer_builder = AsyncSmtpTransport::<Tokio1Executor>::relay(server)?
+            .port(port)
+            .timeout(Some(SMTP_SOCKET_TIMEOUT));
+
+        if let (Some(user), Some(pass)) = (&settings.username, &settings.password) {
             let creds = Credentials::new(user.to_string(), pass.to_string());
             mailer_builder = mailer_builder.credentials(creds);
         }
@@ -160,6 +202,34 @@ impl EmailWorker {
         let mailer = mailer_builder.build();
 
         mailer.send(msg).await?;
+
+        Ok(())
+    }
+
+    /// Hands the message to the local MTA. lettre passes the envelope
+    /// on the command line rather than through -t, so the recipients
+    /// are the ones sashiko addressed and not whatever the MTA parses
+    /// back out of the headers. lettre ends the options with "--"
+    /// ahead of the recipients, so an address that begins with a
+    /// hyphen reaches the MTA as a recipient and not as an option.
+    ///
+    /// The wait is bounded because the outbox is drained one message
+    /// at a time, so an MTA that never exits would hold every later
+    /// message. lettre spawns the child with kill_on_drop, so the
+    /// timeout also reaps it; a test holds lettre to that.
+    async fn send_via_sendmail(settings: &SmtpSettings, msg: Message) -> anyhow::Result<()> {
+        let mailer =
+            AsyncSendmailTransport::<Tokio1Executor>::new_with_command(settings.sendmail_command());
+
+        tokio::time::timeout(SENDMAIL_TIMEOUT, mailer.send(msg))
+            .await
+            .map_err(|_| {
+                anyhow::anyhow!(
+                    "{} did not exit within {} seconds",
+                    settings.sendmail_command(),
+                    SENDMAIL_TIMEOUT.as_secs()
+                )
+            })??;
 
         Ok(())
     }
@@ -275,6 +345,16 @@ fn is_transient_smtp_error(err: &anyhow::Error) -> bool {
     {
         return true;
     }
+    // lettre reports a sendmail failure as its stderr and drops the
+    // exit status, so EX_TEMPFAIL from a loaded queue is not told
+    // apart from a rejection. Retrying a rejection costs two more
+    // attempts; marking a temporary failure Failed loses the message.
+    if err
+        .downcast_ref::<lettre::transport::sendmail::Error>()
+        .is_some()
+    {
+        return true;
+    }
     let msg = err.to_string();
     msg.starts_with("transient error (4") || msg.starts_with("Connection error")
 }
@@ -301,6 +381,208 @@ fn parse_lenient(s: &str) -> anyhow::Result<lettre::message::Mailbox> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Stands in for the MTA. Records the argument vector and the
+    /// message on stdin so a test can inspect what sashiko handed over.
+    fn stub_sendmail(dir: &std::path::Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+
+        let script = dir.join("sendmail");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho \"$@\" > \"$(dirname \"$0\")/argv\"\ncat > \"$(dirname \"$0\")/stdin\"\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        script.to_str().unwrap().to_string()
+    }
+
+    fn sendmail_settings(path: String) -> SmtpSettings {
+        SmtpSettings {
+            transport: MailTransport::Sendmail,
+            server: None,
+            port: None,
+            username: None,
+            password: None,
+            sendmail_path: Some(path),
+            sender_address: "bot@sashiko.dev".to_string(),
+            reply_to: None,
+            dry_run: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_sendmail_receives_envelope_and_body() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = sendmail_settings(stub_sendmail(dir.path()));
+
+        let msg = Message::builder()
+            .from(settings.sender_address.parse().unwrap())
+            .to("maintainer@example.com".parse().unwrap())
+            .cc("list@example.com".parse().unwrap())
+            .subject("Re: [PATCH] fix a thing")
+            .header(ContentType::TEXT_PLAIN)
+            .body("Reviewed-by: Sashiko\n".to_string())
+            .unwrap();
+
+        EmailWorker::send_via_sendmail(&settings, msg)
+            .await
+            .unwrap();
+
+        let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+        assert!(argv.contains("-i"), "argv was {}", argv);
+        assert!(argv.contains("-f bot@sashiko.dev"), "argv was {}", argv);
+        assert!(argv.contains("maintainer@example.com"), "argv was {}", argv);
+        assert!(argv.contains("list@example.com"), "argv was {}", argv);
+
+        let body = std::fs::read_to_string(dir.path().join("stdin")).unwrap();
+        assert!(body.contains("Subject: Re: [PATCH] fix a thing"));
+        assert!(body.contains("Reviewed-by: Sashiko"));
+    }
+
+    /// Recipients come from the headers of a patch, and a local part
+    /// may begin with a hyphen. A lettre that stopped emitting "--"
+    /// fails here.
+    #[tokio::test]
+    async fn test_sendmail_recipient_cannot_be_an_option() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = sendmail_settings(stub_sendmail(dir.path()));
+
+        let msg = Message::builder()
+            .from(settings.sender_address.parse().unwrap())
+            .to("-oQtmp@example.com".parse().unwrap())
+            .subject("Re: [PATCH] fix a thing")
+            .header(ContentType::TEXT_PLAIN)
+            .body("Reviewed-by: Sashiko\n".to_string())
+            .unwrap();
+
+        EmailWorker::send_via_sendmail(&settings, msg)
+            .await
+            .unwrap();
+
+        let argv = std::fs::read_to_string(dir.path().join("argv")).unwrap();
+        assert!(
+            argv.contains("-f bot@sashiko.dev -- -oQtmp@example.com"),
+            "argv was {}",
+            argv
+        );
+    }
+
+    #[tokio::test]
+    async fn test_sendmail_reports_a_nonzero_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("sendmail");
+        // Read the message before rejecting it, as an MTA does. A script
+        // that exits first races lettre's write to its stdin, and the
+        // test then sees EPIPE instead of the exit status.
+        std::fs::write(
+            &script,
+            "#!/bin/sh\ncat >/dev/null\necho 'queue full' >&2\nexit 75\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let settings = sendmail_settings(script.to_str().unwrap().to_string());
+        let msg = Message::builder()
+            .from(settings.sender_address.parse().unwrap())
+            .to("maintainer@example.com".parse().unwrap())
+            .subject("Re: [PATCH] fix a thing")
+            .header(ContentType::TEXT_PLAIN)
+            .body("body\n".to_string())
+            .unwrap();
+
+        let err = EmailWorker::send_via_sendmail(&settings, msg)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("queue full"), "error was {}", err);
+        // Exit 75 is EX_TEMPFAIL. lettre does not pass the status on,
+        // so every sendmail failure is retried.
+        assert!(is_transient_smtp_error(&err));
+    }
+
+    /// The timeout drops lettre's send future, and lettre spawns the
+    /// child with kill_on_drop. A lettre that stopped doing so would
+    /// leave the MTA running past the timeout, and the retry would
+    /// then deliver the message twice. The test drops the future by
+    /// aborting the task that owns it once the MTA is known to be
+    /// running, so it does not race process startup against a clock.
+    /// The child's fate is read from /proc, so the test is Linux-only;
+    /// elsewhere a missing /proc would read as a dead child.
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_sendmail_timeout_kills_the_child() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("sendmail");
+        // exec keeps the shell's PID, so the recorded PID is the
+        // process lettre spawned and the one the kill must reach.
+        std::fs::write(
+            &script,
+            "#!/bin/sh\necho $$ > \"$(dirname \"$0\")/pid\"\nexec sleep 600\n",
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let settings = sendmail_settings(script.to_str().unwrap().to_string());
+        let msg = Message::builder()
+            .from(settings.sender_address.parse().unwrap())
+            .to("maintainer@example.com".parse().unwrap())
+            .subject("Re: [PATCH] fix a thing")
+            .header(ContentType::TEXT_PLAIN)
+            .body("body\n".to_string())
+            .unwrap();
+
+        let send =
+            tokio::spawn(async move { EmailWorker::send_via_sendmail(&settings, msg).await });
+
+        let pid_file = dir.path().join("pid");
+        let mut pid = None;
+        for _ in 0..600 {
+            if let Ok(s) = std::fs::read_to_string(&pid_file)
+                && let Ok(p) = s.trim().parse::<u32>()
+            {
+                pid = Some(p);
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        let pid = pid.expect("stub sendmail did not start");
+
+        send.abort();
+        assert!(send.await.unwrap_err().is_cancelled());
+        // The kill is delivered on drop and the reap happens later on
+        // tokio's reaper, so the child is gone or a zombie, never
+        // still sleeping.
+        let stat = format!("/proc/{}/stat", pid);
+        let mut state = String::new();
+        for _ in 0..50 {
+            state = match std::fs::read_to_string(&stat) {
+                Ok(s) => s
+                    .rsplit(") ")
+                    .next()
+                    .unwrap_or("")
+                    .chars()
+                    .next()
+                    .unwrap_or('?')
+                    .to_string(),
+                // Only a vanished /proc entry means the child is gone;
+                // any other read error is a broken test, not a kill.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(e) => panic!("reading {} failed: {}", stat, e),
+            };
+            if state.is_empty() || state == "Z" {
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            state.is_empty() || state == "Z",
+            "sendmail child {} is still running in state {}",
+            pid,
+            state
+        );
+    }
 
     #[test]
     fn test_email_parsing() {
@@ -359,10 +641,12 @@ mod tests {
     #[test]
     fn test_build_email_message_sets_deterministic_message_id() {
         let settings = SmtpSettings {
-            server: "smtp.example.com".to_string(),
-            port: 587,
+            transport: MailTransport::Smtp,
+            server: Some("smtp.example.com".to_string()),
+            port: Some(587),
             username: None,
             password: None,
+            sendmail_path: None,
             sender_address: "Sashiko Bot <sashiko@linux.dev>".to_string(),
             reply_to: None,
             dry_run: true,
@@ -403,10 +687,12 @@ mod tests {
     #[test]
     fn test_transactional_email_is_marked_automated_and_filable() {
         let settings = SmtpSettings {
-            server: "smtp.example.com".to_string(),
-            port: 587,
+            transport: MailTransport::Smtp,
+            server: Some("smtp.example.com".to_string()),
+            port: Some(587),
             username: None,
             password: None,
+            sendmail_path: None,
             sender_address: "Sashiko Bot <sashiko@linux.dev>".to_string(),
             reply_to: Some("reviews@lists.example.org".to_string()),
             dry_run: true,
@@ -452,5 +738,54 @@ mod tests {
         let unrecognized = format(crate::db::EmailKind::Unrecognized);
         assert!(!unrecognized.contains("List-Id"));
         assert!(!unrecognized.contains("Reply-To"));
+    }
+
+    #[test]
+    fn test_missing_sendmail_path_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nonexistent-sendmail");
+        let settings = sendmail_settings(missing.to_str().unwrap().to_string());
+
+        let err = EmailWorker::check_sendmail_path(&settings).unwrap_err();
+        assert!(err.contains("nonexistent-sendmail"), "error was {}", err);
+    }
+
+    #[test]
+    fn test_non_executable_sendmail_path_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let plain = dir.path().join("sendmail");
+        std::fs::write(&plain, "#!/bin/sh\n").unwrap();
+        let settings = sendmail_settings(plain.to_str().unwrap().to_string());
+
+        let err = EmailWorker::check_sendmail_path(&settings).unwrap_err();
+        assert!(err.contains("not an executable file"), "error was {}", err);
+    }
+
+    #[test]
+    fn test_present_sendmail_path_is_accepted() {
+        let dir = tempfile::tempdir().unwrap();
+        let settings = sendmail_settings(stub_sendmail(dir.path()));
+
+        assert!(EmailWorker::check_sendmail_path(&settings).is_ok());
+    }
+
+    #[test]
+    fn test_dry_run_does_not_need_sendmail() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nonexistent-sendmail");
+        let mut settings = sendmail_settings(missing.to_str().unwrap().to_string());
+        settings.dry_run = true;
+
+        assert!(EmailWorker::check_sendmail_path(&settings).is_ok());
+    }
+
+    #[test]
+    fn test_smtp_transport_does_not_need_sendmail() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("nonexistent-sendmail");
+        let mut settings = sendmail_settings(missing.to_str().unwrap().to_string());
+        settings.transport = MailTransport::Smtp;
+
+        assert!(EmailWorker::check_sendmail_path(&settings).is_ok());
     }
 }
