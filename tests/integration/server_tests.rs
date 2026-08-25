@@ -38,6 +38,7 @@ model = "test"
 host = "127.0.0.1"
 port = 0
 read_only = {read_only}
+public_base_url = "https://sashiko.dev"
 
 [git]
 repository_path = "."
