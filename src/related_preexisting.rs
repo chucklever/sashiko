@@ -985,7 +985,7 @@ mod reporting {
     pub fn related_email_footnotes(
         rows: &[PreexistingDisclosure],
         start_ref: usize,
-        domain: &str,
+        public_root: &str,
     ) -> Vec<String> {
         let refs = footnote_numbers(rows, start_ref);
         rows.iter()
@@ -993,7 +993,7 @@ mod reporting {
             .filter_map(|(d, r)| {
                 let n = r?;
                 let bugid = d.bugid.as_deref()?.trim();
-                Some(format!("[{n}] https://{domain}/#/bug/{bugid}"))
+                Some(format!("[{n}] {public_root}/#/bug/{bugid}"))
             })
             .collect()
     }
@@ -1116,7 +1116,7 @@ mod reporting {
         inline_review: &str,
         has_any_findings: bool,
         rows: &[PreexistingDisclosure],
-        domain: &str,
+        public_root: &str,
     ) -> (usize, String) {
         let (raw_body, raw_footnotes, _) = super::split_inline_review_footnotes(inline_review);
         let (kept_footnotes, start_ref) = if rows.is_empty() {
@@ -1181,7 +1181,7 @@ mod reporting {
             body = super::strip_all_bug_ref_placeholders(&body);
         }
 
-        let related_footnotes = related_email_footnotes(rows, start_ref, domain);
+        let related_footnotes = related_email_footnotes(rows, start_ref, public_root);
         if !kept_footnotes.is_empty() || !related_footnotes.is_empty() {
             if !body.is_empty() {
                 body.push_str("\n\n");
@@ -1771,7 +1771,7 @@ rename to mm/b.c
         );
         assert!(!section.contains(BUG_REF_PLACEHOLDER), "{section}");
         let footnotes =
-            related_email_footnotes(std::slice::from_ref(&row), next_ref, "sashiko.dev");
+            related_email_footnotes(std::slice::from_ref(&row), next_ref, "https://sashiko.dev");
         assert_eq!(
             footnotes,
             vec!["[5] https://sashiko.dev/#/bug/linux-7f9a2c4b-3e1d-4a80-9b5c-1d2e3f4a5b6c"]
@@ -1782,7 +1782,7 @@ rename to mm/b.c
             inline_with_bug_ref,
             true,
             std::slice::from_ref(&row),
-            "sashiko.dev",
+            "https://sashiko.dev",
         );
         assert_eq!(start_ref, 5);
         assert!(!composed.contains("Related pre-existing issue"));
@@ -1795,7 +1795,7 @@ rename to mm/b.c
             &composed,
             true,
             std::slice::from_ref(&row),
-            "sashiko.dev",
+            "https://sashiko.dev",
         );
         assert_eq!(start_ref_again, 5);
         assert_eq!(composed_again, composed);
@@ -1805,7 +1805,7 @@ rename to mm/b.c
             "No issues found.",
             false,
             std::slice::from_ref(&row),
-            "sashiko.dev",
+            "https://sashiko.dev",
         );
         assert_eq!(start_no_new, 1);
         assert!(!composed_no_new.contains("Related pre-existing issue"));
@@ -1833,7 +1833,7 @@ rename to mm/b.c
             two_inline,
             false,
             &[row0_no_id, row.clone()],
-            "sashiko.dev",
+            "https://sashiko.dev",
         );
         assert!(composed_two.contains("First pre-existing issue."));
         assert!(composed_two.contains("Second pre-existing [1] issue."));

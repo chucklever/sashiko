@@ -249,6 +249,13 @@ pub fn derive_nntp_group(email: &str) -> String {
 }
 
 impl EmailPolicyConfig {
+    /// Whether any list, or the default every list inherits, posts
+    /// Patchwork checks. Those checks carry a link to the review, which
+    /// is what the startup check on server.public_base_url guards.
+    pub fn posts_patchwork_checks(&self) -> bool {
+        self.defaults.patchwork.enabled || self.lists.values().any(|l| l.patchwork.enabled)
+    }
+
     /// Parses and validates a mailing list & email policy configuration from a
     /// TOML string, applying environment overrides and URL normalization.
     pub fn parse_content(content: &str) -> anyhow::Result<Self> {

@@ -813,17 +813,12 @@ impl Reviewer {
         let patchset_failed = ctx.db.get_patchset_status(patchset.id).await?.as_deref()
             == Some(ReviewStatus::Failed.as_str());
 
-        let domain = if ctx.settings.project.domain.is_empty() {
-            "sashiko.sashiko.dev"
-        } else {
-            ctx.settings.project.domain.as_str()
-        };
         let slug = patchset
             .slug
             .as_deref()
             .or(patchset.message_id.as_deref())
             .unwrap_or("");
-        let target_url = format!("https://{}/#/patchset/{}", domain, slug);
+        let target_url = format!("{}/#/patchset/{}", ctx.settings.server.public_root(), slug);
 
         let version =
             crate::forge::extract_mr_version_from_subject(patchset.subject.as_deref(), pr_number);
@@ -3368,16 +3363,11 @@ impl Reviewer {
                                 let composed_inline_review = if !reserved_related.is_empty()
                                     || raw_inline_review.is_some_and(|s| s.contains("[BUG_REF"))
                                 {
-                                    let domain = if ctx.settings.project.domain.is_empty() {
-                                        "sashiko.dev"
-                                    } else {
-                                        ctx.settings.project.domain.as_str()
-                                    };
                                     let (_, body) = crate::related_preexisting::compose_inline_review_with_related(
                                         raw_inline_review.unwrap_or(""),
                                         has_any_findings,
                                         &reserved_related,
-                                        domain,
+                                        &ctx.settings.server.public_root(),
                                     );
                                     Some(body)
                                 } else {
@@ -4554,14 +4544,11 @@ impl Reviewer {
     /// The dashboard link for part `index` of the patchset whose
     /// Message-ID, without angle brackets, is `patchset_msg_id_clean`.
     fn patch_target_url(ctx: &ReviewContext, patchset_msg_id_clean: &str, index: i64) -> String {
-        let domain = if ctx.settings.project.domain.is_empty() {
-            "sashiko.dev"
-        } else {
-            ctx.settings.project.domain.as_str()
-        };
         format!(
-            "https://{}/#/patchset/{}?part={}",
-            domain, patchset_msg_id_clean, index
+            "{}/#/patchset/{}?part={}",
+            ctx.settings.server.public_root(),
+            patchset_msg_id_clean,
+            index
         )
     }
 
@@ -4800,14 +4787,11 @@ impl Reviewer {
             return Ok(());
         }
 
-        let domain = if ctx.settings.project.domain.is_empty() {
-            "sashiko.dev"
-        } else {
-            ctx.settings.project.domain.as_str()
-        };
         let target_url = format!(
-            "https://{}/#/patchset/{}?part={}",
-            domain, patchset_msg_id_clean, index
+            "{}/#/patchset/{}?part={}",
+            ctx.settings.server.public_root(),
+            patchset_msg_id_clean,
+            index
         );
 
         let patchwork_policies =
@@ -4989,7 +4973,7 @@ impl Reviewer {
                         inline_review,
                         total_issues_count > 0,
                         &related,
-                        domain,
+                        &ctx.settings.server.public_root(),
                     );
 
                 let mut header = String::new();
@@ -7339,6 +7323,7 @@ echo '{{"patchset_id": 1, "patches": [{{"index": 1, "status": "applied"}}]}}'
         )?;
         let mut settings = Settings::new()?;
         settings.database.url = ":memory:".to_string();
+        settings.server.public_base_url = Some("https://sashiko.dev".to_string());
         settings.review.email_policy_path = policy_path.to_str().unwrap().to_string();
         settings.smtp = Some(crate::settings::SmtpSettings {
             transport: crate::settings::MailTransport::Smtp,
@@ -7705,6 +7690,7 @@ inline review content (previously raised in v1 [4]).
 
         let mut settings = Settings::new()?;
         settings.database.url = ":memory:".to_string();
+        settings.server.public_base_url = Some("https://sashiko.dev".to_string());
         settings.review.email_policy_path = policy_path.to_str().unwrap().to_string();
         settings.smtp = Some(crate::settings::SmtpSettings {
             transport: crate::settings::MailTransport::Smtp,
@@ -8035,6 +8021,7 @@ inline review content 4\n\n-- \nSashiko AI review · https://sashiko.dev/#/patch
 
         let mut settings = Settings::new()?;
         settings.database.url = ":memory:".to_string();
+        settings.server.public_base_url = Some("https://sashiko.dev".to_string());
         settings.review.email_policy_path = policy_path.to_str().unwrap().to_string();
         settings.smtp = Some(crate::settings::SmtpSettings {
             transport: crate::settings::MailTransport::Smtp,

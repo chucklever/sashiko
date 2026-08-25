@@ -58,6 +58,9 @@ pub struct ProjectSettings {
     pub name: String,
     #[serde(default)]
     pub description: String,
+    /// The public host name, shown by the web UI and used as the default
+    /// attribution. Left unset, it is the host in server.public_base_url,
+    /// so the one URL a deployment configures also names it.
     #[serde(default)]
     pub domain: String,
     #[serde(default)]
@@ -1032,7 +1035,7 @@ impl Default for ServerSettings {
 impl ServerSettings {
     /// The base URL for a link mailed to someone else, without a trailing
     /// slash, or None unless public_base_url has a reachable host. Unlike
-    /// sign_in_base_url(), it never falls back to the bind address.
+    /// public_root(), it never falls back to the bind address.
     pub fn mailed_link_base_url(&self) -> Option<String> {
         self.public_base_url
             .as_deref()
@@ -1041,15 +1044,33 @@ impl ServerSettings {
             .map(|url| url.trim_end_matches('/').to_string())
     }
 
-    /// The base URL to build a sign-in link on, without a trailing slash.
+    /// The base URL to build an outgoing link on, without a trailing slash.
     ///
     /// Falls back to the bind address, which is only good enough when the link
-    /// is written to the log for a local operator to read.
-    pub fn sign_in_base_url(&self) -> String {
+    /// is written to the log for a local operator to read. A link that is
+    /// mailed never sees the fallback: validate_outgoing_links() refuses to
+    /// start with SMTP configured and no reachable public_base_url.
+    pub fn public_root(&self) -> String {
         match self.public_base_url.as_deref().map(str::trim) {
             Some(url) if !url.is_empty() => url.trim_end_matches('/').to_string(),
             _ => format!("http://{}:{}", self.host, self.port),
         }
+    }
+
+    /// The host name in public_base_url alone, for a caller that must
+    /// recognize the name a request arrived under. Returns None when the
+    /// value is unset or carries no "scheme://host"; an IPv6 literal is not
+    /// handled, since a canonical public name is not written that way.
+    pub fn public_host(&self) -> Option<&str> {
+        let authority = self.public_base_url.as_deref()?.trim().split_once("://")?.1;
+        let host = authority
+            .split('/')
+            .next()?
+            .split('@')
+            .next_back()?
+            .split(':')
+            .next()?;
+        (!host.is_empty()).then_some(host)
     }
 }
 
@@ -1799,17 +1820,26 @@ impl Settings {
         Self::load(None)
     }
 
-    /// Refuses a configuration that would mail sign-in links nobody can open.
+    /// Refuses a configuration that would send out links nobody can open.
     ///
-    /// Without SMTP the link is written to the log for a local operator to
-    /// read, so the base URL is optional. With SMTP it is the only thing
-    /// standing between a maintainer and a dead link, and a deployment that
-    /// fails to start is far kinder than one that silently mails
-    /// http://:::8080/ at three in the morning.
-    pub fn validate_sign_in_delivery(&self) -> Result<(), String> {
-        if self.smtp.is_none() {
+    /// A link that only reaches the log is read by a local operator, so the
+    /// base URL is optional then. Once a link leaves the host, in a sign-in
+    /// mail, a forge comment, or a Patchwork check, the base URL is the only
+    /// thing standing between a maintainer and a dead link, and a deployment
+    /// that fails to start is far kinder than one that silently posts
+    /// http://:::8080/ at three in the morning. The caller says whether a
+    /// Patchwork policy is in force, since that lives in the mailing list
+    /// policy file rather than here.
+    pub fn validate_outgoing_links(&self, posts_patchwork_checks: bool) -> Result<(), String> {
+        let sender = if self.smtp.is_some() {
+            "SMTP is configured"
+        } else if self.forge.enabled {
+            "the forge integration is enabled"
+        } else if posts_patchwork_checks {
+            "a mailing list posts Patchwork checks"
+        } else {
             return Ok(());
-        }
+        };
         match self.server.public_base_url.as_deref() {
             Some(url) if is_reachable_base_url(url) => Ok(()),
             Some(url) => Err(format!(
@@ -1817,11 +1847,10 @@ impl Settings {
                  recipient can reach. Set it to the URL the service is served at",
                 url
             )),
-            None => Err(
-                "server.public_base_url must be set when SMTP is configured, because sign-in \
-                 links are mailed and the bind address does not name a reachable host"
-                    .to_string(),
-            ),
+            None => Err(format!(
+                "server.public_base_url must be set when {sender}, because the links sent out \
+                 are built from it and the bind address does not name a reachable host"
+            )),
         }
     }
 
@@ -1834,13 +1863,25 @@ impl Settings {
             .add_source(Environment::with_prefix("SASHIKO").separator("__"))
             .build()?;
 
-        let settings: Self = s.try_deserialize()?;
+        let mut settings: Self = s.try_deserialize()?;
         if let Some(smtp) = &settings.smtp {
             smtp.validate().map_err(ConfigError::Message)?;
         }
         settings.ai.validate().map_err(ConfigError::Message)?;
+        settings.derive_project_domain();
 
         Ok(settings)
+    }
+
+    /// Fills project.domain from server.public_base_url when the file left
+    /// it unset, so the UI and the attribution name the host the links are
+    /// built on rather than an empty string.
+    fn derive_project_domain(&mut self) {
+        if self.project.domain.is_empty()
+            && let Some(host) = self.server.public_host()
+        {
+            self.project.domain = host.to_string();
+        }
     }
 
     pub fn local_review_path() -> PathBuf {
@@ -2502,7 +2543,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sign_in_base_url_drops_the_trailing_slash() {
+    fn test_public_root_drops_the_trailing_slash() {
         let mut server = ServerSettings {
             host: "::".to_string(),
             port: 8080,
@@ -2513,12 +2554,53 @@ mod tests {
             log_sign_in_links: false,
             acl: AclSettings::default(),
         };
-        assert_eq!(server.sign_in_base_url(), "https://sashiko.example.org");
+        assert_eq!(server.public_root(), "https://sashiko.example.org");
 
         // With nothing configured the link never leaves the machine, so a
         // best-effort address is enough.
         server.public_base_url = None;
-        assert_eq!(server.sign_in_base_url(), "http://:::8080");
+        assert_eq!(server.public_root(), "http://:::8080");
+    }
+
+    #[test]
+    fn test_public_host_strips_scheme_port_and_path() {
+        let mut server = ServerSettings {
+            host: "::".to_string(),
+            port: 8080,
+            public_base_url: Some("https://review.example:8443/sashiko".to_string()),
+            read_only: false,
+            testing_mode: false,
+            jwt_secret: None,
+            log_sign_in_links: false,
+            acl: AclSettings::default(),
+        };
+        assert_eq!(server.public_host(), Some("review.example"));
+
+        server.public_base_url = Some("review.example".to_string());
+        assert_eq!(server.public_host(), None);
+
+        server.public_base_url = None;
+        assert_eq!(server.public_host(), None);
+    }
+
+    #[test]
+    fn test_project_domain_derives_from_public_base_url() {
+        let mut settings = Settings::new().unwrap();
+        settings.project.domain = String::new();
+        settings.server.public_base_url = Some("https://review.example:8443/".to_string());
+        settings.derive_project_domain();
+        assert_eq!(settings.project.domain, "review.example");
+
+        // A domain the file names is kept even when it differs from the URL.
+        settings.project.domain = "named.example".to_string();
+        settings.derive_project_domain();
+        assert_eq!(settings.project.domain, "named.example");
+
+        // Without a public URL there is nothing to derive from.
+        settings.project.domain = String::new();
+        settings.server.public_base_url = None;
+        settings.derive_project_domain();
+        assert_eq!(settings.project.domain, "");
     }
 
     #[test]
@@ -2617,13 +2699,13 @@ mod tests {
     }
 
     #[test]
-    fn test_startup_refuses_to_mail_links_nobody_can_open() {
+    fn test_startup_refuses_to_send_links_nobody_can_open() {
         let mut settings = Settings::new().unwrap();
 
         // Shipped configuration has no SMTP, so the link is logged and the
         // base URL is nobody's problem.
         assert!(settings.smtp.is_none());
-        assert!(settings.validate_sign_in_delivery().is_ok());
+        assert!(settings.validate_outgoing_links(false).is_ok());
 
         settings.smtp = Some(SmtpSettings {
             transport: MailTransport::Smtp,
@@ -2636,13 +2718,24 @@ mod tests {
             reply_to: None,
             dry_run: true,
         });
-        assert!(settings.validate_sign_in_delivery().is_err());
+        assert!(settings.validate_outgoing_links(false).is_err());
 
         settings.server.public_base_url = Some("http://[::]:8080".to_string());
-        assert!(settings.validate_sign_in_delivery().is_err());
+        assert!(settings.validate_outgoing_links(false).is_err());
 
         settings.server.public_base_url = Some("https://sashiko.example.org".to_string());
-        assert!(settings.validate_sign_in_delivery().is_ok());
+        assert!(settings.validate_outgoing_links(false).is_ok());
+
+        // A forge comment and a Patchwork check carry the same link, so each
+        // is refused the same way without SMTP in the picture.
+        settings.smtp = None;
+        settings.server.public_base_url = None;
+        settings.forge.enabled = true;
+        assert!(settings.validate_outgoing_links(false).is_err());
+        settings.forge.enabled = false;
+        assert!(settings.validate_outgoing_links(true).is_err());
+        settings.server.public_base_url = Some("https://sashiko.example.org".to_string());
+        assert!(settings.validate_outgoing_links(true).is_ok());
     }
 
     #[test]
