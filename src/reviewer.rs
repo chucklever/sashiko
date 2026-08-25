@@ -2680,8 +2680,10 @@ impl Reviewer {
         let patch_subject = msg_details.subject.unwrap_or_default();
 
         let target_url = format!(
-            "https://sashiko.dev/#/patchset/{}?part={}",
-            patchset_msg_id_clean, index
+            "{}/#/patchset/{}?part={}",
+            ctx.settings.server.public_root(),
+            patchset_msg_id_clean,
+            index
         );
 
         let patchwork_policies =
@@ -3713,6 +3715,7 @@ echo '{"patchset_id": 1, "patches": [{"index": 1, "status": "applied"}]}'
 
         let mut settings = Settings::new()?;
         settings.database.url = ":memory:".to_string();
+        settings.server.public_base_url = Some("https://sashiko.dev".to_string());
         settings.review.email_policy_path = policy_path.to_str().unwrap().to_string();
         settings.smtp = Some(crate::settings::SmtpSettings {
             server: "localhost".to_string(),
@@ -4037,6 +4040,7 @@ inline review content 4\n\n-- \nSashiko AI review · https://sashiko.dev/#/patch
 
         let mut settings = Settings::new()?;
         settings.database.url = ":memory:".to_string();
+        settings.server.public_base_url = Some("https://sashiko.dev".to_string());
         settings.review.email_policy_path = policy_path.to_str().unwrap().to_string();
         settings.smtp = Some(crate::settings::SmtpSettings {
             server: "localhost".to_string(),

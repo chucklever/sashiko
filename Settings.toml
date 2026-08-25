@@ -165,7 +165,9 @@ prompt_caching = true
 host = "::"
 port = 8080
 # The URL this service is reachable at from outside, with no trailing slash.
-# Required whenever [smtp] is configured, because sign-in links are mailed and
+# Sign-in links, the link in every review mail, the Patchwork check target,
+# and the redirect from the "www." form of the name are all built from it.
+# Required whenever [smtp] is configured, because those links are mailed and
 # the bind address above does not name a host a recipient can open. The server
 # refuses to start if SMTP is on and this is unset or names a bind address.
 # public_base_url = ""

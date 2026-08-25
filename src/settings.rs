@@ -719,15 +719,33 @@ pub struct ServerSettings {
 }
 
 impl ServerSettings {
-    /// The base URL to build a sign-in link on, without a trailing slash.
+    /// The base URL to build an outgoing link on, without a trailing slash.
     ///
     /// Falls back to the bind address, which is only good enough when the link
-    /// is written to the log for a local operator to read.
-    pub fn sign_in_base_url(&self) -> String {
+    /// is written to the log for a local operator to read. A link that is
+    /// mailed never sees the fallback: validate_sign_in_delivery() refuses to
+    /// start with SMTP configured and no reachable public_base_url.
+    pub fn public_root(&self) -> String {
         match self.public_base_url.as_deref().map(str::trim) {
             Some(url) if !url.is_empty() => url.trim_end_matches('/').to_string(),
             _ => format!("http://{}:{}", self.host, self.port),
         }
+    }
+
+    /// The host name in public_base_url alone, for a caller that must
+    /// recognize the name a request arrived under. Returns None when the
+    /// value is unset or carries no "scheme://host"; an IPv6 literal is not
+    /// handled, since a canonical public name is not written that way.
+    pub fn public_host(&self) -> Option<&str> {
+        let authority = self.public_base_url.as_deref()?.trim().split_once("://")?.1;
+        let host = authority
+            .split('/')
+            .next()?
+            .split('@')
+            .next_back()?
+            .split(':')
+            .next()?;
+        (!host.is_empty()).then_some(host)
     }
 }
 
@@ -1328,7 +1346,7 @@ mod tests {
     }
 
     #[test]
-    fn test_sign_in_base_url_drops_the_trailing_slash() {
+    fn test_public_root_drops_the_trailing_slash() {
         let mut server = ServerSettings {
             host: "::".to_string(),
             port: 8080,
@@ -1339,12 +1357,33 @@ mod tests {
             log_sign_in_links: false,
             acl: AclSettings::default(),
         };
-        assert_eq!(server.sign_in_base_url(), "https://sashiko.example.org");
+        assert_eq!(server.public_root(), "https://sashiko.example.org");
 
         // With nothing configured the link never leaves the machine, so a
         // best-effort address is enough.
         server.public_base_url = None;
-        assert_eq!(server.sign_in_base_url(), "http://:::8080");
+        assert_eq!(server.public_root(), "http://:::8080");
+    }
+
+    #[test]
+    fn test_public_host_strips_scheme_port_and_path() {
+        let mut server = ServerSettings {
+            host: "::".to_string(),
+            port: 8080,
+            public_base_url: Some("https://review.example:8443/sashiko".to_string()),
+            read_only: false,
+            testing_mode: false,
+            jwt_secret: None,
+            log_sign_in_links: false,
+            acl: AclSettings::default(),
+        };
+        assert_eq!(server.public_host(), Some("review.example"));
+
+        server.public_base_url = Some("review.example".to_string());
+        assert_eq!(server.public_host(), None);
+
+        server.public_base_url = None;
+        assert_eq!(server.public_host(), None);
     }
 
     #[test]

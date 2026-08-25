@@ -383,13 +383,25 @@ pub struct SubmitResponse {
     pub id: String,
 }
 
-async fn redirect_www(req: Request, next: Next) -> impl IntoResponse {
-    if let Some(host) = req.headers().get("host").and_then(|h| h.to_str().ok()) {
+/// Send a request that arrived under the "www." form of the site name to
+/// the canonical name in `server.public_base_url`. A deployment with no
+/// public base URL, or one reached by some other name entirely, is left
+/// alone.
+async fn redirect_www(
+    State(server): State<Arc<crate::settings::ServerSettings>>,
+    req: Request,
+    next: Next,
+) -> impl IntoResponse {
+    if let (Some(host), Some(canonical)) = (
+        req.headers().get("host").and_then(|h| h.to_str().ok()),
+        server.public_host(),
+    ) {
         let host_without_port = host.split(':').next().unwrap_or("");
-        if host_without_port == "www.sashiko.dev" {
+        if host_without_port.strip_prefix("www.") == Some(canonical) {
             let uri = req.uri();
             let new_uri = format!(
-                "https://sashiko.dev{}{}",
+                "{}{}{}",
+                server.public_root(),
                 uri.path(),
                 uri.query().map(|q| format!("?{}", q)).unwrap_or_default()
             );
@@ -412,6 +424,7 @@ pub fn build_router(
 ) -> Router {
     let forge_registry = Arc::new(crate::forge::ForgeRegistry::new());
     let read_only = settings.server.read_only;
+    let server = Arc::new(settings.server.clone());
 
     let state = Arc::new(AppState {
         settings: settings.clone(),
@@ -476,7 +489,7 @@ pub fn build_router(
             get_service(ServeFile::new("static/index.html")),
         )
         .nest_service("/static", ServeDir::new("static"))
-        .layer(middleware::from_fn(redirect_www))
+        .layer(middleware::from_fn_with_state(server, redirect_www))
         .layer(axum::extract::DefaultBodyLimit::max(25 * 1024 * 1024))
         .with_state(state)
 }
@@ -4628,7 +4641,7 @@ async fn request_link(
                 lifetime.max(0) as u64,
             )
             .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
-            let base_url = state.settings.server.sign_in_base_url();
+            let base_url = state.settings.server.public_root();
             let link = format!("{}/auth/verify?token={}", base_url, token);
 
             if state.settings.smtp.is_some() {
