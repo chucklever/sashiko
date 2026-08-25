@@ -814,7 +814,14 @@ async fn run_daemon(
         return Err(reason.into());
     }
 
-    if let Err(reason) = settings.validate_sign_in_delivery() {
+    // The policy file is read again when the workers start; a file that
+    // fails to load is reported there, so here it only counts as posting
+    // nothing.
+    let posts_patchwork_checks =
+        sashiko::email_policy::EmailPolicyConfig::load_async(&settings.review.email_policy_path)
+            .await
+            .is_ok_and(|policy| policy.posts_patchwork_checks());
+    if let Err(reason) = settings.validate_outgoing_links(posts_patchwork_checks) {
         error!("Refusing to start: {}", reason);
         return Err(reason.into());
     }

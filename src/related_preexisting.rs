@@ -581,7 +581,7 @@ mod reporting {
     pub fn related_email_footnotes(
         rows: &[PreexistingDisclosure],
         start_ref: usize,
-        domain: &str,
+        public_root: &str,
     ) -> Vec<String> {
         let refs = footnote_numbers(rows, start_ref);
         rows.iter()
@@ -589,7 +589,7 @@ mod reporting {
             .filter_map(|(d, r)| {
                 let n = r?;
                 let bugid = d.bugid.as_deref()?.trim();
-                Some(format!("[{n}] https://{domain}/#/bug/{bugid}"))
+                Some(format!("[{n}] {public_root}/#/bug/{bugid}"))
             })
             .collect()
     }
@@ -1123,7 +1123,7 @@ rename to mm/b.c
             "{section}"
         );
         assert!(!section.contains(BUG_REF_PLACEHOLDER), "{section}");
-        let footnotes = related_email_footnotes(&[row], next_ref, "sashiko.dev");
+        let footnotes = related_email_footnotes(&[row], next_ref, "https://sashiko.dev");
         assert_eq!(
             footnotes,
             vec!["[5] https://sashiko.dev/#/bug/linux-7f9a2c4b-3e1d-4a80-9b5c-1d2e3f4a5b6c"]
