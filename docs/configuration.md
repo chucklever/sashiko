@@ -39,7 +39,7 @@ Optional. Describes the project this configuration is for.
 | `kind` | string | -- | Project this file is for: `"linux"` or `"sashiko"`. When set, it is checked against the project selected by `--project` / `SASHIKO_PROJECT`, and a mismatch is an error. When absent, the file is accepted for any project. |
 | `name` | string | `""` | Display name shown in the web UI. |
 | `description` | string | `""` | Short description shown in the web UI. |
-| `domain` | string | `""` | Public hostname used to build links to the web UI in forge comments (`https://<domain>/#/patchset/...`). Falls back to `sashiko.sashiko.dev` when empty. |
+| `domain` | string | -- | Public hostname shown in the web UI and used as the default `attribution`. Defaults to the host in `server.public_base_url`. Links are built from `server.public_base_url`, not from this. |
 | `attribution` | string | -- | Actor name recorded on bug discoveries. Defaults to `domain`, or `"sashiko"` when neither is set. |
 
 ### `[forge]`
@@ -190,7 +190,7 @@ Settings for the goose provider (`provider = "goose"`).
 | `host` | string | `"::"` | Listen address. `"::"` binds to all interfaces (IPv4 and IPv6). |
 | `port` | integer | `8080` | Listen port for the web UI and API. |
 | `read_only` | bool | `false` | When true, disables write API endpoints. Set automatically by `--no-api`. |
-| `public_base_url` | string | -- | The URL the service is reachable at from outside, with no trailing slash. Required whenever `[smtp]` is configured: sign-in links are mailed, and the bind address names no host a recipient can open. The server refuses to start without it. |
+| `public_base_url` | string | -- | The URL the service is reachable at from outside, with no trailing slash. Sign-in links, the link in every review mail, the Patchwork check `target_url`, and the redirect from the `www.` form of the name are all built from it. Required whenever `[smtp]` is configured: those links are mailed, and the bind address names no host a recipient can open. The server refuses to start without it. |
 | `jwt_secret` | string | -- | Signs sign-in links and session tokens. Without it, sign-in returns `501` and no identity can be established. Keep it stable: replacing it invalidates every session and every unopened link. Prefer `SASHIKO__SERVER__JWT_SECRET` over writing it to disk. |
 | `log_sign_in_links` | bool | `false` | Writes sign-in links to the log. For a developer machine with no real users; a link in a log is a credential anyone reading the log can spend. |
 
