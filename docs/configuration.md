@@ -160,6 +160,12 @@ Settings for the Kiro CLI provider (`provider = "kiro-cli"`).
 | `port` | integer | `8080` | Listen port for the web UI and API. |
 | `read_only` | bool | `false` | When true, disables write API endpoints. Set automatically by `--no-api`. |
 
+### `[site]`
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `base_url` | string | `"https://sashiko.dev"` | Externally reachable root of this deployment. Review mail footers, the Patchwork check `target_url`, and the redirect from the `www.` form of the name are all built from it. Set it whenever the instance is reached by any other name; `server.host` is a bind address and cannot supply it. A trailing slash is ignored. |
+
 ### `[git]`
 
 | Key | Type | Default | Description |

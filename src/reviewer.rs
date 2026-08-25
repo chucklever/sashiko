@@ -2252,8 +2252,10 @@ impl Reviewer {
         let patch_subject = msg_details.subject.unwrap_or_default();
 
         let target_url = format!(
-            "https://sashiko.dev/#/patchset/{}?part={}",
-            patchset_msg_id_clean, index
+            "{}/#/patchset/{}?part={}",
+            ctx.settings.site.root(),
+            patchset_msg_id_clean,
+            index
         );
 
         let patchwork_policies =

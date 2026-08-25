@@ -486,6 +486,47 @@ pub struct ServerSettings {
 #[derive(Debug, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 #[allow(unused)]
+pub struct SiteSettings {
+    /// Externally reachable root of this deployment. `server.host` is a
+    /// bind address, so it cannot supply this: an instance behind a TLS
+    /// proxy listens on "::" but is reached by name. Outgoing review
+    /// mail, the Patchwork check target, and the canonical-host redirect
+    /// are all built from this value.
+    #[serde(default = "default_base_url")]
+    pub base_url: String,
+}
+
+fn default_base_url() -> String {
+    "https://sashiko.dev".to_string()
+}
+
+impl SiteSettings {
+    /// `base_url` with any trailing slash removed, so a caller can
+    /// append a path without doubling the separator.
+    pub fn root(&self) -> &str {
+        self.base_url.trim_end_matches('/')
+    }
+
+    /// The host name alone, for a caller that must recognize the name a
+    /// request arrived under. Returns None when `base_url` carries no
+    /// "scheme://host"; an IPv6 literal is not handled, since a
+    /// canonical public name is not written that way.
+    pub fn host(&self) -> Option<&str> {
+        let authority = self.base_url.split_once("://")?.1;
+        let host = authority
+            .split('/')
+            .next()?
+            .split('@')
+            .next_back()?
+            .split(':')
+            .next()?;
+        (!host.is_empty()).then_some(host)
+    }
+}
+
+#[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+#[allow(unused)]
 pub struct CustomRemoteSettings {
     pub name: String,
     pub url: String,
@@ -584,8 +625,16 @@ pub struct Settings {
     pub mailing_lists: MailingListsSettings,
     pub ai: AiSettings,
     pub server: ServerSettings,
+    #[serde(default = "default_site")]
+    pub site: SiteSettings,
     pub git: GitSettings,
     pub review: ReviewSettings,
+}
+
+fn default_site() -> SiteSettings {
+    SiteSettings {
+        base_url: default_base_url(),
+    }
 }
 
 fn default_subsystems() -> SubsystemsSettings {
@@ -714,6 +763,32 @@ mod tests {
             Settings::local_review_path_in(temp.path()),
             temp.path().join("Settings.toml")
         );
+    }
+
+    #[test]
+    fn test_site_base_url_defaults_to_sashiko_dev() {
+        let site: SiteSettings = toml::from_str("").unwrap();
+        assert_eq!(site.base_url, "https://sashiko.dev");
+    }
+
+    #[test]
+    fn test_site_root_drops_a_trailing_slash() {
+        let site: SiteSettings =
+            toml::from_str("base_url = \"https://review.example/\"\n").unwrap();
+        assert_eq!(site.root(), "https://review.example");
+    }
+
+    #[test]
+    fn test_site_host_strips_scheme_port_and_path() {
+        let site: SiteSettings =
+            toml::from_str("base_url = \"https://review.example:8443/sashiko\"\n").unwrap();
+        assert_eq!(site.host(), Some("review.example"));
+    }
+
+    #[test]
+    fn test_site_host_rejects_a_value_without_a_scheme() {
+        let site: SiteSettings = toml::from_str("base_url = \"review.example\"\n").unwrap();
+        assert_eq!(site.host(), None);
     }
 
     #[test]
