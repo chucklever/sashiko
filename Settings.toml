@@ -145,6 +145,9 @@ prompt_caching = true
 host = "::"
 port = 8080
 
+[site]
+base_url = "https://sashiko.dev"
+
 [git]
 repository_path = "third_party/linux"
 
