@@ -78,8 +78,8 @@ Core AI settings that apply to all providers.
 | `temperature` | float | `1.0` | Sampling temperature. |
 | `api_timeout_secs` | integer | `300` | Timeout for individual API calls (seconds). |
 | `log_turns` | bool | `false` | Log each AI request/response turn at info level. Verbose but useful for debugging. |
-| `response_cache` | bool | `false` | Cache AI responses to disk. |
-| `response_cache_ttl_days` | integer | `7` | TTL for cached responses (days). |
+| `response_cache` | bool | `false` | Cache AI responses to disk. Entries are keyed on the provider's own settings as well as the request, so changing `model`, an endpoint, a reasoning level, or an output cap misses the entries recorded under the old value rather than replaying them. |
+| `response_cache_ttl_days` | integer | `7` | TTL for cached responses (days). Entries stranded by a settings change age out on this schedule. |
 
 #### `[ai.claude]`
 
