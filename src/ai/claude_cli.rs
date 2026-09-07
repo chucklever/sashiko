@@ -17,22 +17,30 @@
 //!
 //! ## Safety
 //!
-//! The `claude --print` flag runs in text-completion mode: no tools, no file
-//! access, no session persistence, no network calls. The CLI reads a prompt
-//! from stdin and writes a response to stdout — it cannot modify the
-//! filesystem or execute commands. This makes it inherently safe for use as
-//! a completion backend without any additional sandboxing.
+//! `claude --print` is invoked with `--tools ""`, so the CLI runs as a
+//! completion backend: no built-in tools, no file access, no session
+//! persistence. It reads a prompt from stdin and writes a response to stdout
+//! and cannot modify the filesystem or execute commands, so it needs no
+//! additional sandboxing. The review's own tools are described in the prompt
+//! and executed by sashiko.
+//!
+//! The system prompt goes out through `--system-prompt-file` rather than
+//! inline in the prompt: it replaces Claude Code's own system prompt, and a
+//! file sidesteps the per-argument size limit that a subsystem guide can
+//! exceed.
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::process::Stdio;
 use std::time::Duration;
+use tempfile::NamedTempFile;
 use tokio::process::Command;
 use tracing::debug;
 
 use super::cli_common::{
-    CliIoError, IDLE_TIMEOUT, build_prompt, parse_inner_response, spawn_cli, write_prompt_and_wait,
+    CliIoError, IDLE_TIMEOUT, build_conversation, parse_inner_response, spawn_cli,
+    write_prompt_and_wait,
 };
 use crate::ai::{
     AiErrorClass, AiProvider, AiRequest, AiResponse, AiUsage, ClassifyAiError,
@@ -83,7 +91,7 @@ pub struct ClaudeCliProvider {
 #[async_trait]
 impl AiProvider for ClaudeCliProvider {
     async fn generate_content(&self, request: AiRequest) -> Result<AiResponse> {
-        let prompt = build_prompt(&request);
+        let prompt = build_conversation(&request);
 
         debug!("claude-cli prompt length: {} chars", prompt.len());
 
@@ -92,6 +100,8 @@ impl AiProvider for ClaudeCliProvider {
             "--output-format".to_string(),
             "json".to_string(),
             "--no-session-persistence".to_string(),
+            "--tools".to_string(),
+            String::new(),
         ];
 
         args.push("--model".to_string());
@@ -100,6 +110,30 @@ impl AiProvider for ClaudeCliProvider {
         if let Some(effort) = &self.effort {
             args.push("--effort".to_string());
             args.push(effort.clone());
+        }
+
+        // Held until the CLI exits; dropping it unlinks the file.
+        let mut system_file: Option<NamedTempFile> = None;
+        if let Some(sys) = &request.system {
+            let f = tokio::task::spawn_blocking({
+                let sys = sys.clone();
+                move || -> Result<NamedTempFile> {
+                    use std::io::Write;
+                    let mut f = tempfile::Builder::new()
+                        .prefix("sashiko-claude-system-")
+                        .suffix(".txt")
+                        .tempfile()?;
+                    f.write_all(sys.as_bytes())?;
+                    f.flush()?;
+                    Ok(f)
+                }
+            })
+            .await
+            .map_err(|e| ClaudeCliError::Spawn(e.to_string()))?
+            .map_err(|e| ClaudeCliError::Spawn(e.to_string()))?;
+            args.push("--system-prompt-file".to_string());
+            args.push(f.path().to_string_lossy().into_owned());
+            system_file = Some(f);
         }
 
         let mut command = Command::new("claude");
@@ -123,6 +157,7 @@ impl AiProvider for ClaudeCliProvider {
                 CliIoError::Wait(e) => ClaudeCliError::Wait(e.to_string()),
                 CliIoError::Idle(idle) => ClaudeCliError::Timeout(idle.after.as_secs()),
             })?;
+        drop(system_file);
 
         if !output.stderr.is_empty() {
             let stderr = String::from_utf8_lossy(&output.stderr);
