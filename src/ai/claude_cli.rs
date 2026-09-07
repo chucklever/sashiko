@@ -29,17 +29,24 @@
 //! A request with tools also gets `--json-schema`. Claude Code serves it with
 //! a single StructuredOutput tool that takes the reply object and nothing
 //! else, so it gives the model no access to files, commands or the network.
+//!
+//! The system prompt goes out through `--system-prompt-file` rather than
+//! inline in the prompt: it replaces Claude Code's own system prompt, and a
+//! file sidesteps the per-argument size limit that a subsystem guide can
+//! exceed.
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::process::Stdio;
 use std::time::Duration;
+use tempfile::NamedTempFile;
 use tokio::process::Command;
 use tracing::debug;
 
 use super::cli_common::{
-    CliIoError, IDLE_TIMEOUT, build_prompt, parse_inner_response, spawn_cli, write_prompt_and_wait,
+    CliIoError, IDLE_TIMEOUT, build_conversation, parse_inner_response, spawn_cli,
+    write_prompt_and_wait,
 };
 use crate::ai::{
     AiErrorClass, AiProvider, AiRequest, AiResponse, AiUsage, ClassifyAiError,
@@ -168,7 +175,12 @@ const TOOL_REPLY_SCHEMA: &str = r#"{"type":"object","minProperties":1,"propertie
 
 /// Returns the argv passed to `claude` (the prompt goes on stdin). Extracted
 /// so tests can assert that no tool survives.
-pub fn build_claude_args(model: &str, effort: Option<&str>, has_tools: bool) -> Vec<String> {
+pub fn build_claude_args(
+    model: &str,
+    effort: Option<&str>,
+    has_tools: bool,
+    system_prompt_file: Option<&std::path::Path>,
+) -> Vec<String> {
     // Isolation arguments/settings verified with Claude Code 2.1.170, and
     // --json-schema with 2.1.308
     let mut args = vec![
@@ -208,6 +220,11 @@ pub fn build_claude_args(model: &str, effort: Option<&str>, has_tools: bool) -> 
         args.push(TOOL_REPLY_SCHEMA.to_string());
     }
 
+    if let Some(path) = system_prompt_file {
+        args.push("--system-prompt-file".to_string());
+        args.push(path.to_string_lossy().into_owned());
+    }
+
     args
 }
 
@@ -218,11 +235,33 @@ impl ClaudeCliProvider {
         binary: &std::ffi::OsStr,
         idle_timeout: Duration,
     ) -> Result<AiResponse> {
-        let prompt = build_prompt(&request);
+        let prompt = build_conversation(&request);
 
         debug!("claude-cli prompt length: {} chars", prompt.len());
 
         let has_tools = request.tools.as_ref().is_some_and(|t| !t.is_empty());
+        // Held until the CLI exits; dropping it unlinks the file.
+        let mut system_file: Option<NamedTempFile> = None;
+        if let Some(sys) = &request.system {
+            let f = tokio::task::spawn_blocking({
+                let sys = sys.clone();
+                move || -> Result<NamedTempFile> {
+                    use std::io::Write;
+                    let mut f = tempfile::Builder::new()
+                        .prefix("sashiko-claude-system-")
+                        .suffix(".txt")
+                        .tempfile()?;
+                    f.write_all(sys.as_bytes())?;
+                    f.flush()?;
+                    Ok(f)
+                }
+            })
+            .await
+            .map_err(|e| ClaudeCliError::Spawn(e.to_string()))?
+            .map_err(|e| ClaudeCliError::Spawn(e.to_string()))?;
+            system_file = Some(f);
+        }
+
         let working_directory = tempfile::tempdir().map_err(ClaudeCliError::WorkingDirectory)?;
         let mut command = Command::new(binary);
         command
@@ -230,6 +269,7 @@ impl ClaudeCliProvider {
                 &self.model,
                 self.effort.as_deref(),
                 has_tools,
+                system_file.as_ref().map(|f| f.path()),
             ))
             .current_dir(working_directory.path())
             .stdin(Stdio::piped())
@@ -250,6 +290,7 @@ impl ClaudeCliProvider {
                 CliIoError::Wait(e) => ClaudeCliError::Wait(e.to_string()),
                 CliIoError::Idle(idle) => ClaudeCliError::Timeout(idle.after.as_secs()),
             })?;
+        drop(system_file);
 
         let stderr = log_and_redact_stderr("claude-cli", &output.stderr);
         let raw = String::from_utf8_lossy(&output.stdout);
@@ -368,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_claude_args_disable_every_tool() {
-        let args = build_claude_args("sonnet", Some("high"), true);
+        let args = build_claude_args("sonnet", Some("high"), true, None);
         let tools = args.iter().position(|a| a == "--tools").unwrap();
         assert_eq!(args[tools + 1], "");
         let denied = args.iter().position(|a| a == "--disallowedTools").unwrap();
@@ -379,12 +420,12 @@ mod tests {
 
     #[test]
     fn test_claude_args_schema_only_with_tools() {
-        let with = build_claude_args("sonnet", None, true);
+        let with = build_claude_args("sonnet", None, true, None);
         let schema = with.iter().position(|a| a == "--json-schema").unwrap();
         let parsed: Value = serde_json::from_str(&with[schema + 1]).unwrap();
         assert!(parsed["properties"]["tool_calls"].is_object());
         assert!(parsed["properties"]["content"].is_object());
-        let without = build_claude_args("sonnet", None, false);
+        let without = build_claude_args("sonnet", None, false, None);
         assert!(!without.contains(&"--json-schema".to_string()));
     }
 
