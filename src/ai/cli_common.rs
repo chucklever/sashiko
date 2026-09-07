@@ -63,6 +63,19 @@ pub fn build_prompt(request: &AiRequest) -> String {
         out.push_str("\n</system>\n\n");
     }
 
+    out.push_str(&build_conversation(request));
+    out
+}
+
+/// Build the prompt without the system section, for a CLI that takes the
+/// system prompt on its own channel.
+///
+/// A `<system>` block inside the user turn reads to a model that already
+/// has a real system prompt as an injection attempt: claude-sonnet-5 under
+/// `claude --print` declined the review on those grounds.
+pub fn build_conversation(request: &AiRequest) -> String {
+    let mut out = String::new();
+
     // Conversation history
     for msg in &request.messages {
         match &msg.role {
