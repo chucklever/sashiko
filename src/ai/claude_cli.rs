@@ -25,17 +25,24 @@
 //! instructions; managed MCP configurations can prevent strict-mode startup.
 //! These restrictions disable agent functionality, not operating-system
 //! access: the CLI is still trusted to read credentials and contact the model.
+//!
+//! The system prompt goes out through `--system-prompt-file` rather than
+//! inline in the prompt: it replaces Claude Code's own system prompt, and a
+//! file sidesteps the per-argument size limit that a subsystem guide can
+//! exceed.
 
 use anyhow::Result;
 use async_trait::async_trait;
 use serde_json::Value;
 use std::process::Stdio;
 use std::time::Duration;
+use tempfile::NamedTempFile;
 use tokio::process::Command;
 use tracing::debug;
 
 use super::cli_common::{
-    CliIoError, IDLE_TIMEOUT, build_prompt, parse_inner_response, spawn_cli, write_prompt_and_wait,
+    CliIoError, IDLE_TIMEOUT, build_conversation, parse_inner_response, spawn_cli,
+    write_prompt_and_wait,
 };
 use crate::ai::{
     AiErrorClass, AiProvider, AiRequest, AiResponse, AiUsage, ClassifyAiError,
@@ -144,7 +151,11 @@ pub struct ClaudeCliProvider {
 
 /// Returns the argv passed to `claude` (the prompt goes on stdin). Extracted
 /// so tests can assert that no tool survives.
-pub fn build_claude_args(model: &str, effort: Option<&str>) -> Vec<String> {
+pub fn build_claude_args(
+    model: &str,
+    effort: Option<&str>,
+    system_prompt_file: Option<&std::path::Path>,
+) -> Vec<String> {
     // Isolation arguments/settings verified with Claude Code 2.1.170.
     let mut args = vec![
         "--print".to_string(),
@@ -178,6 +189,11 @@ pub fn build_claude_args(model: &str, effort: Option<&str>) -> Vec<String> {
         args.push(effort.to_string());
     }
 
+    if let Some(path) = system_prompt_file {
+        args.push("--system-prompt-file".to_string());
+        args.push(path.to_string_lossy().into_owned());
+    }
+
     args
 }
 
@@ -188,14 +204,40 @@ impl ClaudeCliProvider {
         binary: &std::ffi::OsStr,
         idle_timeout: Duration,
     ) -> Result<AiResponse> {
-        let prompt = build_prompt(&request);
+        let prompt = build_conversation(&request);
 
         debug!("claude-cli prompt length: {} chars", prompt.len());
+
+        // Held until the CLI exits; dropping it unlinks the file.
+        let mut system_file: Option<NamedTempFile> = None;
+        if let Some(sys) = &request.system {
+            let f = tokio::task::spawn_blocking({
+                let sys = sys.clone();
+                move || -> Result<NamedTempFile> {
+                    use std::io::Write;
+                    let mut f = tempfile::Builder::new()
+                        .prefix("sashiko-claude-system-")
+                        .suffix(".txt")
+                        .tempfile()?;
+                    f.write_all(sys.as_bytes())?;
+                    f.flush()?;
+                    Ok(f)
+                }
+            })
+            .await
+            .map_err(|e| ClaudeCliError::Spawn(e.to_string()))?
+            .map_err(|e| ClaudeCliError::Spawn(e.to_string()))?;
+            system_file = Some(f);
+        }
 
         let working_directory = tempfile::tempdir().map_err(ClaudeCliError::WorkingDirectory)?;
         let mut command = Command::new(binary);
         command
-            .args(build_claude_args(&self.model, self.effort.as_deref()))
+            .args(build_claude_args(
+                &self.model,
+                self.effort.as_deref(),
+                system_file.as_ref().map(|f| f.path()),
+            ))
             .current_dir(working_directory.path())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -215,6 +257,7 @@ impl ClaudeCliProvider {
                 CliIoError::Wait(e) => ClaudeCliError::Wait(e.to_string()),
                 CliIoError::Idle(idle) => ClaudeCliError::Timeout(idle.after.as_secs()),
             })?;
+        drop(system_file);
 
         let stderr = log_and_redact_stderr("claude-cli", &output.stderr);
         let raw = String::from_utf8_lossy(&output.stdout);
@@ -333,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_claude_args_disable_every_tool() {
-        let args = build_claude_args("sonnet", Some("high"));
+        let args = build_claude_args("sonnet", Some("high"), None);
         let tools = args.iter().position(|a| a == "--tools").unwrap();
         assert_eq!(args[tools + 1], "");
         let denied = args.iter().position(|a| a == "--disallowedTools").unwrap();

@@ -66,7 +66,7 @@ async fn cli_disables_native_tools_and_configuration_in_an_empty_directory() {
         model: "test-model[1m]".to_string(),
         effort: Some("high".to_string()),
     };
-    let expected_prompt = build_prompt(&request());
+    let expected_prompt = build_conversation(&request());
     let response = provider
         .generate_content_with_binary(
             request(),
