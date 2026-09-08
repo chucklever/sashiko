@@ -42,6 +42,32 @@ pub fn default_stage_count(project: ProjectId) -> usize {
     }
 }
 
+/// The longest short label among the stages a review of `project` can run.
+pub fn max_stage_short_label_len(project: ProjectId) -> usize {
+    match project {
+        ProjectId::Linux => linux_patch_review::ANALYSIS_STAGES
+            .iter()
+            .map(|s| s.short.len())
+            .chain(
+                linux_patch_review::CONSOLIDATION_STAGES
+                    .iter()
+                    .map(|s| s.short.len()),
+            )
+            .max()
+            .unwrap_or(0),
+        ProjectId::Sashiko => sashiko_patch_review::ANALYSIS_STAGES
+            .iter()
+            .map(|s| s.short.len())
+            .chain(
+                sashiko_patch_review::CONSOLIDATION_STAGES
+                    .iter()
+                    .map(|s| s.short.len()),
+            )
+            .max()
+            .unwrap_or(0),
+    }
+}
+
 /// Whether a stage counts towards the review progress display.
 ///
 /// The analysis and consolidation stages are the ones `planned_stages_from()`

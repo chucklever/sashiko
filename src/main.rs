@@ -1649,6 +1649,13 @@ fn status_label(project: ProjectId, p: &PatchState, with_turns: bool) -> String 
     }
 }
 
+/// The widest status status_label() can produce for `project`.
+fn max_status_len(project: ProjectId) -> usize {
+    sashiko::workflows::max_stage_short_label_len(project)
+        + " (turn 99)".len()
+        + " (+99 stages)".len()
+}
+
 /// Appends a line per patch whenever its status changes, without moving the
 /// cursor.
 ///
@@ -1842,19 +1849,24 @@ fn paint_progress(state: &mut ProgressState, out: &mut impl WriteColor) -> std::
 
     let top = state.terminal_rows.saturating_sub(state.reserved) + 1;
 
+    // Budget for the widest status so the subject column does not move
+    // as statuses change length within or between frames.
+    let max_idx_len = state
+        .patches
+        .keys()
+        .map(|idx| idx.to_string().len())
+        .max()
+        .unwrap_or(1);
+    let fixed_overhead = "      [Patch ".len() + max_idx_len + "] ".len() + " | ".len();
+    let available_for_subject = limit
+        .saturating_sub(fixed_overhead)
+        .saturating_sub(max_status_len(state.project));
+    let target_subject_width = 30;
+    let subject_width = std::cmp::min(target_subject_width, available_for_subject);
+
     for (&idx, p) in &state.patches {
         write!(out, "\x1b[{};1H\x1b[2K", top + lines_printed)?;
         let status_str = status_label(state.project, p, true);
-
-        // Calculate available width for subject to guarantee status is never truncated
-        let fixed_overhead = 16 + 3; // "      [Patch X] " + " | "
-        let status_len = status_str.chars().count();
-        let available_for_subject = limit
-            .saturating_sub(fixed_overhead)
-            .saturating_sub(status_len);
-
-        let target_subject_width = 30;
-        let subject_width = std::cmp::min(target_subject_width, available_for_subject);
 
         let mut subject_padded = if p.subject.chars().count() > subject_width {
             if subject_width > 3 {
@@ -1873,7 +1885,12 @@ fn paint_progress(state: &mut ProgressState, out: &mut impl WriteColor) -> std::
         }
 
         let mut tw = TruncatingWriter::new(limit);
-        let _ = tw.write_segment(out, &format!("      [Patch {}] ", idx), None, false);
+        let _ = tw.write_segment(
+            out,
+            &format!("      [Patch {:>width$}] ", idx, width = max_idx_len),
+            None,
+            false,
+        );
         let _ = tw.write_segment(out, &subject_padded, None, false);
         let _ = tw.write_segment(out, " | ", None, false);
 
