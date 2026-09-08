@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::project::ProjectId;
+use linux_patch_review::{AnalysisStage, ConsolidationStage};
 
 pub mod code_notes;
 pub mod gcc_patch_review;
@@ -65,6 +66,38 @@ pub fn default_stage_count(project: ProjectId) -> usize {
                 + zephyr_patch_review::CONSOLIDATION_STAGES.len()
         }
     }
+}
+
+/// The longest short label among the stages a review of `project` can run.
+pub fn max_stage_short_label_len(project: ProjectId) -> usize {
+    let (analysis, consolidation): (&[AnalysisStage], &[&ConsolidationStage]) = match project {
+        ProjectId::Linux => (
+            linux_patch_review::ANALYSIS_STAGES,
+            linux_patch_review::CONSOLIDATION_STAGES,
+        ),
+        ProjectId::Sashiko => (
+            sashiko_patch_review::ANALYSIS_STAGES,
+            sashiko_patch_review::CONSOLIDATION_STAGES,
+        ),
+        ProjectId::Gcc => (
+            gcc_patch_review::ANALYSIS_STAGES,
+            gcc_patch_review::CONSOLIDATION_STAGES,
+        ),
+        ProjectId::Qemu => (
+            qemu_patch_review::ANALYSIS_STAGES,
+            qemu_patch_review::CONSOLIDATION_STAGES,
+        ),
+        ProjectId::Zephyr => (
+            zephyr_patch_review::ANALYSIS_STAGES,
+            zephyr_patch_review::CONSOLIDATION_STAGES,
+        ),
+    };
+    analysis
+        .iter()
+        .map(|s| s.short.len())
+        .chain(consolidation.iter().map(|s| s.short.len()))
+        .max()
+        .unwrap_or(0)
 }
 
 /// Whether a stage counts towards the review progress display.
