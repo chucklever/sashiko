@@ -115,17 +115,53 @@ impl AiProvider for CodexCliProvider {
 
         let raw = String::from_utf8_lossy(&output.stdout);
 
-        // Codex outputs line-delimited JSON events:
-        //   {"type": "item.completed", "item": {"text": "..."}}
-        //   {"type": "turn.completed", "usage": {"input_tokens": N, "output_tokens": N}}
-        //   {"type": "error", "message": "..."}
-        let mut text_parts = Vec::new();
+        let (answer, usage) = self.collect_turn(&raw)?;
+        let Some(response_text) = answer else {
+            // Fall back to raw output if no events parsed
+            warn!("codex-cli: no item.completed events found, using raw output");
+            return parse_inner_response("codex-cli", &raw, usage);
+        };
+
+        parse_inner_response("codex-cli", &response_text, usage)
+    }
+
+    fn get_capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            model_name: self.model.clone(),
+            context_window_size: 200_000,
+        }
+    }
+
+    fn uses_workspace(&self) -> bool {
+        true
+    }
+
+    fn cache_identity(&self) -> String {
+        cache_identity_with(&self.model, &[("effort", self.effort.as_deref())])
+    }
+
+    fn llm_permits(&self) -> u32 {
+        crate::ai::LOCAL_PERMITS_PER_CALL
+    }
+}
+
+impl CodexCliProvider {
+    /// Pick the turn's answer and usage out of codex's event stream.
+    ///
+    /// Codex outputs line-delimited JSON events:
+    ///   {"type": "item.completed", "item": {"type": "agent_message", "text": "..."}}
+    ///   {"type": "turn.completed", "usage": {"input_tokens": N, "output_tokens": N}}
+    ///   {"type": "error", "message": "..."}
+    ///
+    /// The answer is the last agent_message of the turn, which is also what
+    /// `codex exec --output-last-message` writes. A reasoning summary or a
+    /// progress message ("I'm loading the guidance first, then...") arrives
+    /// as its own item ahead of it. Concatenating those in puts prose before
+    /// the JSON object a stage asks for, and the combined text no longer
+    /// parses.
+    fn collect_turn(&self, raw: &str) -> Result<(Option<String>, Option<AiUsage>)> {
+        let mut answer: Option<String> = None;
         let mut usage: Option<AiUsage> = None;
-        // Every item.completed carrying text feeds the response, whatever the
-        // item is, so a reasoning summary is concatenated ahead of the answer
-        // and the combined text no longer parses as the JSON object a stage
-        // asks for.  Recording which item types contributed, and how much,
-        // shows whether that is what happened on a given run.
         let mut contributors: Vec<String> = Vec::new();
         let mut unparsed_lines = 0usize;
 
@@ -146,7 +182,9 @@ impl AiProvider for CodexCliProvider {
                     if let Some(text) = event["item"]["text"].as_str() {
                         let kind = event["item"]["type"].as_str().unwrap_or("untyped");
                         contributors.push(format!("{kind}:{}", text.len()));
-                        text_parts.push(text.to_string());
+                        if kind != "reasoning" && !text.is_empty() {
+                            answer = Some(text.to_string());
+                        }
                     }
                 }
                 Some("turn.completed") => {
@@ -173,37 +211,9 @@ impl AiProvider for CodexCliProvider {
             contributors.join(", ")
         );
 
-        let response_text = text_parts.join("\n");
-        if response_text.is_empty() {
-            // Fall back to raw output if no events parsed
-            warn!("codex-cli: no item.completed events found, using raw output");
-            return parse_inner_response("codex-cli", &raw, usage);
-        }
-
-        parse_inner_response("codex-cli", &response_text, usage)
+        Ok((answer, usage))
     }
 
-    fn get_capabilities(&self) -> ProviderCapabilities {
-        ProviderCapabilities {
-            model_name: self.model.clone(),
-            context_window_size: 200_000,
-        }
-    }
-
-    fn uses_workspace(&self) -> bool {
-        true
-    }
-
-    fn cache_identity(&self) -> String {
-        cache_identity_with(&self.model, &[("effort", self.effort.as_deref())])
-    }
-
-    fn llm_permits(&self) -> u32 {
-        crate::ai::LOCAL_PERMITS_PER_CALL
-    }
-}
-
-impl CodexCliProvider {
     /// Handles an error event from a run that exited 0. A requirements layer
     /// that substitutes its own value for a setting reports the substitution
     /// this way and lets the run proceed.
@@ -327,6 +337,28 @@ mod tests {
                 "disallowed by requirements".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn only_the_last_agent_message_is_the_answer() {
+        let raw = concat!(
+            r#"{"type":"item.completed","item":{"type":"reasoning","text":"**Planning**"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"I'm loading the guidance first, then I'll trace the callers."}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"command_execution","command":"cat x"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"{\"content\":\"done\"}"}}"#,
+            "\n",
+            r#"{"type":"turn.completed","usage":{"input_tokens":3,"output_tokens":2}}"#,
+        );
+        let provider = CodexCliProvider {
+            model: "gpt-5-codex".to_string(),
+            effort: None,
+        };
+        let (answer, usage) = provider.collect_turn(raw).unwrap();
+        assert_eq!(answer.as_deref(), Some(r#"{"content":"done"}"#));
+        assert_eq!(usage.unwrap().total_tokens, 5);
     }
 
     #[test]
