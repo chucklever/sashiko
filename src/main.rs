@@ -2170,13 +2170,21 @@ async fn handle_review_command(
                 }
             }
             ProgressEvent::AiReviewAttempt {
-                patch_index: _,
+                patch_index,
                 attempt,
                 max_attempts,
             } => {
                 if attempt > 1 {
                     // Let's just log this since we don't want stdout/stderr output to disrupt the rewrite loop
                     info!("AI review retry (attempt {}/{})", attempt, max_attempts);
+                    // The retry reruns every stage, so the stages the failed
+                    // attempt finished must not count a second time.
+                    if let Some(p) = s.patches.get_mut(&patch_index) {
+                        p.completed_stages = 0;
+                        p.active_stages.clear();
+                        p.active_stage_turns.clear();
+                        render_progress(&mut s);
+                    }
                 }
             }
             ProgressEvent::AiReviewFinished { patch_index } => {
