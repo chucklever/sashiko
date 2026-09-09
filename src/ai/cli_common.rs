@@ -511,8 +511,12 @@ pub fn parse_inner_response(
     // Try extracting JSON (might be in a markdown code block)
     let json_str = extract_json(text);
 
-    if let Ok(v) = serde_json::from_str::<Value>(&json_str) {
-        return parse_single_json(&v, &json_str, usage);
+    // A multi-line answer often arrives as {"content": "..."} with raw
+    // newlines.  The cleaner is the identity on valid JSON and repairs the
+    // string literals otherwise, so one attempt covers both.
+    let cleaned = crate::utils::clean_json_string(&json_str);
+    if let Ok(v) = serde_json::from_str::<Value>(&cleaned) {
+        return parse_single_json(&v, &cleaned, usage);
     }
 
     // Try JSONL: multiple JSON objects on separate lines (model sometimes emits
@@ -562,6 +566,23 @@ pub fn parse_inner_response(
         // (json_str from extract_json may be mangled if text had multiple objects)
         return Ok(AiResponse {
             content: Some(text.to_string()),
+            thought: None,
+            thought_signature: None,
+            tool_calls: None,
+            usage,
+            truncated: false,
+        });
+    }
+
+    // The cleaner cannot repair a string the model never escaped at all:
+    // an inner double quote ends the literal early, and a backslash before
+    // a raw newline is not an escape.  A quoted hunk supplies both.  This
+    // runs after the JSONL pass so that a reply made of parseable
+    // {"content": ...} lines keeps its whole text instead of being read as
+    // one wrapper around them.
+    if let Some(body) = unwrap_raw_content_wrapper(&json_str) {
+        return Ok(AiResponse {
+            content: Some(body.to_string()),
             thought: None,
             thought_signature: None,
             tool_calls: None,
@@ -682,6 +703,20 @@ fn parse_single_json(v: &Value, json_str: &str, usage: Option<AiUsage>) -> Resul
         usage,
         truncated: false,
     })
+}
+
+/// Unwrap a {"content": "..."} object whose string body the model left
+/// unescaped, returning the body verbatim.
+///
+/// Call it only after the text failed to parse with control characters
+/// repaired: the body is not decoded, so an escape sequence in it comes
+/// back as source text.
+fn unwrap_raw_content_wrapper(text: &str) -> Option<&str> {
+    let rest = text.trim().strip_prefix('{')?.trim_start();
+    let rest = rest.strip_prefix("\"content\"")?.trim_start();
+    let rest = rest.strip_prefix(':')?.trim_start();
+    let body = rest.strip_prefix('"')?;
+    body.strip_suffix('}')?.trim_end().strip_suffix('"')
 }
 
 /// Extract JSON from text that may be wrapped in markdown fences.
@@ -888,6 +923,63 @@ mod tests {
             Some("No issues found in this patch.")
         );
         assert!(resp.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_parse_content_wrapper_with_raw_newlines() {
+        // codex wraps a multi-line report per the RESPONSE FORMAT rule but
+        // leaves the newlines unescaped, which strict JSON rejects
+        let text = "{\"content\":\"commit abc123\nAuthor: A <a@b>\n\n> quoted line\nreply\n\"}";
+        let resp = parse_inner_response("test-cli", text, None).unwrap();
+        assert_eq!(
+            resp.content.as_deref(),
+            Some("commit abc123\nAuthor: A <a@b>\n\n> quoted line\nreply\n")
+        );
+        assert!(resp.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_parse_content_wrapper_with_raw_inner_quote() {
+        // an unescaped quote inside a quoted hunk closes the string literal
+        // early, which no control-character repair can undo
+        let text =
+            "{\"content\":\"commit abc123\nAuthor: A <a@b>\n\n> pr_info(\"foo\\n\");\nreply\n\"}";
+        let resp = parse_inner_response("test-cli", text, None).unwrap();
+        assert_eq!(
+            resp.content.as_deref(),
+            Some("commit abc123\nAuthor: A <a@b>\n\n> pr_info(\"foo\\n\");\nreply\n")
+        );
+        assert!(resp.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_parse_content_wrapper_with_raw_line_continuation() {
+        // a Makefile continuation is a backslash before a raw newline, which
+        // the repair leaves as an invalid escape
+        let text = "{\"content\":\"commit abc123\nAuthor: A <a@b>\n\n> CFLAGS := -O2 \\\n>\t-g\nreply\n\"}\n";
+        let resp = parse_inner_response("test-cli", text, None).unwrap();
+        assert_eq!(
+            resp.content.as_deref(),
+            Some("commit abc123\nAuthor: A <a@b>\n\n> CFLAGS := -O2 \\\n>\t-g\nreply\n")
+        );
+        assert!(resp.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_parse_content_only_jsonl_keeps_the_whole_text() {
+        // Two parseable content lines look like one wrapper from the
+        // outside; the JSONL pass must see them first.
+        let text = "{\"content\":\"a\"}\n{\"content\":\"b\"}";
+        let resp = parse_inner_response("test-cli", text, None).unwrap();
+        assert_eq!(resp.content.as_deref(), Some(text));
+        assert!(resp.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_unwrap_raw_content_wrapper_rejects_other_shapes() {
+        assert!(unwrap_raw_content_wrapper("prose\n{\"content\":\"a\nb\"}").is_none());
+        assert!(unwrap_raw_content_wrapper("{\"tool_calls\":\"a\nb\"}").is_none());
+        assert!(unwrap_raw_content_wrapper("{\"content\":\"a\nb\"} trailing").is_none());
     }
 
     fn spawn_sh(script: &str) -> tokio::process::Child {
