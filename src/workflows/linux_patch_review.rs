@@ -1402,6 +1402,16 @@ pub fn format_post_verification_feedback(violation: &str) -> String {
 }
 
 fn validate_inline_format(content: &str, state: &LinuxPatchReviewState) -> Result<(), String> {
+    // A wrapper that reaches this point is malformed JSON the provider
+    // could not unwrap. Say so, or the retry repeats the same wrapper and
+    // is told the header on its first line is missing.
+    if content
+        .trim_start()
+        .strip_prefix('{')
+        .is_some_and(|rest| rest.trim_start().starts_with("\"content\""))
+    {
+        return Err("The output arrived as a {\"content\": \"...\"} JSON object that could not be parsed, so the report inside it was never unwrapped. Escape every newline, double quote, and backslash inside the content string as JSON requires.".to_string());
+    }
     if content.lines().any(|l| l.trim_start().starts_with("```")) {
         return Err("The output contains Markdown code blocks ('```'). It must be plain text as per `inline-template.md`.".to_string());
     }
@@ -4321,6 +4331,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_validate_inline_format_names_a_leaked_wrapper() {
+        // the wrapper's first line hides the commit header inside the string
+        let content = "{\"content\":\"commit abc\nAuthor: A <a@b>\n> line\nreply\n\"}";
+        let state = LinuxPatchReviewState::default();
+        let err = validate_inline_format(content, &state).unwrap_err();
+        assert!(err.contains("JSON object"), "{err}");
+    }
+
+    #[test]
     fn test_expand_keeps_per_item_concerns_when_a_cluster_is_split() {
         let clusters = vec![json!({
             "id": "G1",
@@ -4344,6 +4363,7 @@ mod tests {
             assert_eq!(f["cluster_ids"], json!(["G1"]));
         }
     }
+
     #[test]
     fn test_each_stage_declares_whether_it_needs_the_commit_message() {
         // This was a numeric range in a free function, which kept compiling
