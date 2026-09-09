@@ -667,14 +667,6 @@ async fn review_single_patch(
             .await
         {
             Ok(result) => {
-                info!("AI review completed for patch {}.", p.index);
-                emit(
-                    progress,
-                    ProgressEvent::AiReviewFinished {
-                        patch_index: p.index,
-                    },
-                );
-
                 let mut inline_content = None;
                 if let Some(output) = &result.output
                     && let Some(content) = output.get("review_inline").and_then(|v| v.as_str())
@@ -699,6 +691,14 @@ async fn review_single_patch(
                         continue;
                     }
                 }
+
+                info!("AI review completed for patch {}.", p.index);
+                emit(
+                    progress,
+                    ProgressEvent::AiReviewFinished {
+                        patch_index: p.index,
+                    },
+                );
 
                 return Ok(json!({
                     "patch_index": p.index,
