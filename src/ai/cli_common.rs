@@ -437,6 +437,15 @@ pub fn parse_inner_response(
         return parse_single_json(&v, &cleaned, usage);
     }
 
+    // codex sometimes prefixes the answer with a progress sentence, the
+    // object starting on a line of its own below the prose.
+    if let Some(object) = object_after_prose(&json_str) {
+        let cleaned = crate::utils::clean_json_string(object);
+        if let Ok(v) = serde_json::from_str::<Value>(&cleaned) {
+            return parse_single_json(&v, &cleaned, usage);
+        }
+    }
+
     // The cleaner cannot repair a string the model never escaped at all:
     // an inner double quote ends the literal early, and a backslash before
     // a raw newline is not an escape.  A quoted hunk supplies both.
@@ -616,6 +625,25 @@ fn parse_single_json(v: &Value, json_str: &str, usage: Option<AiUsage>) -> Resul
         usage,
         truncated: false,
     })
+}
+
+/// The tail of `text` from the first line that opens with a brace to the
+/// closing brace that ends it, when at least one line of prose precedes
+/// it.  The tail is not parsed here.  A brace inside the prose does not
+/// count: the object a stage asks for begins its own line.
+fn object_after_prose(text: &str) -> Option<&str> {
+    let text = text.trim_end();
+    if !text.ends_with('}') {
+        return None;
+    }
+    let mut offset = 0;
+    for line in text.split_inclusive('\n') {
+        if line.trim_start().starts_with('{') {
+            return (offset > 0).then(|| &text[offset..]);
+        }
+        offset += line.len();
+    }
+    None
 }
 
 /// Unwrap a {"content": "..."} object whose string body the model left
@@ -823,6 +851,33 @@ mod tests {
             Some("commit abc123\nAuthor: A <a@b>\n\n> CFLAGS := -O2 \\\n>\t-g\nreply\n")
         );
         assert!(resp.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_parse_object_after_progress_prose() {
+        // codex puts its progress sentence and the answer in one agent
+        // message, the object on a line of its own below the prose
+        let text = "I'm tracing every allocation across the failure paths.\n{\"concerns\":[{\"type\":\"Leak\"}]}";
+        let resp = parse_inner_response("test-cli", text, None).unwrap();
+        assert_eq!(
+            resp.content.as_deref(),
+            Some("{\"concerns\":[{\"type\":\"Leak\"}]}")
+        );
+        assert!(resp.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_object_after_prose_wants_a_line_of_its_own() {
+        assert!(object_after_prose("{\"a\":1}").is_none());
+        assert!(object_after_prose("see {x} here\n{\"a\":1}").is_some());
+        assert!(object_after_prose("prose {\"a\":1}").is_none());
+        assert!(object_after_prose("prose\n{\"a\":1} trailing").is_none());
+        // JSONL: the first object opens line one, so nothing precedes it
+        assert!(object_after_prose("{\"a\":1}\n{\"b\":2}").is_none());
+        assert_eq!(
+            object_after_prose("prose\n  {\"a\":\n1}\n"),
+            Some("  {\"a\":\n1}")
+        );
     }
 
     #[test]
