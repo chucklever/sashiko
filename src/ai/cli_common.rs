@@ -426,12 +426,18 @@ pub fn parse_inner_response(
     text: &str,
     usage: Option<AiUsage>,
 ) -> Result<AiResponse> {
-    // Try extracting JSON (might be in a markdown code block)
-    let json_str = extract_json(text);
-
     // A multi-line answer often arrives as {"content": "..."} with raw
     // newlines.  The cleaner is the identity on valid JSON and repairs the
-    // string literals otherwise, so one attempt covers both.
+    // string literals otherwise, so one attempt covers both.  The text is
+    // tried whole before any fence is looked for: a hunk quoted inside a
+    // string value carries fences of its own.
+    let cleaned = crate::utils::clean_json_string(text.trim());
+    if let Ok(v) = serde_json::from_str::<Value>(&cleaned) {
+        return parse_single_json(&v, &cleaned, usage);
+    }
+
+    // Try extracting JSON (might be in a markdown code block)
+    let json_str = extract_json(text);
     let cleaned = crate::utils::clean_json_string(&json_str);
     if let Ok(v) = serde_json::from_str::<Value>(&cleaned) {
         return parse_single_json(&v, &cleaned, usage);
@@ -864,6 +870,18 @@ mod tests {
             Some("{\"concerns\":[{\"type\":\"Leak\"}]}")
         );
         assert!(resp.tool_calls.is_none());
+    }
+
+    #[test]
+    fn test_parse_object_with_a_fence_inside_a_string() {
+        // a hunk quoted in a concern carries its own fences
+        let text = "{\"concerns\":[{\"description\":\"see:\n```c\nfoo();\n```\nend\"}]}";
+        let resp = parse_inner_response("test-cli", text, None).unwrap();
+        let v: Value = serde_json::from_str(resp.content.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            v["concerns"][0]["description"].as_str(),
+            Some("see:\n```c\nfoo();\n```\nend")
+        );
     }
 
     #[test]
