@@ -298,7 +298,17 @@ SPECIFICITY REQUIREMENT: Each inline comment MUST reference the exact function n
 
 PRE-EXISTING ISSUES: If any finding has `"preexisting": true`, include it in the report and state explicitly at the start of its comment that the problem was not introduced by this patch (for example: "This problem wasn't introduced by this patch, but...")."#;
 
-const STAGE_JSON_SCHEMA_EXAMPLE: &str = r#"
+// A macro rather than a const so that the sentence can be spliced into
+// the const schema texts with concat!, which takes literals only.
+macro_rules! report_shape_note {
+    () => {
+        "The 'concerns' and 'dismissed_concerns' arrays are the only two keys of the top-level object, and each is a sibling of the other. Close every concern object with '}' and the 'concerns' array with ']' before writing the 'dismissed_concerns' key; it never appears inside a concern object."
+    };
+}
+pub(crate) use report_shape_note;
+
+const STAGE_JSON_SCHEMA_EXAMPLE: &str = concat!(
+    r#"
 TodoWrite compatibility: vendored prompts may ask you to add tasks or suspected bugs to TodoWrite. Do not call or mention TodoWrite. Treat those instructions as an internal checklist only. If that checklist identifies a concrete suspected bug, carry it forward as a JSON concern with file, function_or_symbol, line when known, triggering condition, and evidence. Do not output generic checklist progress as a concern.
 
 Once you have gathered sufficient information, return ONLY a JSON object with 'concerns' and 'dismissed_concerns' arrays.
@@ -310,6 +320,9 @@ Each object in the 'concerns' array MUST use exactly the following keys: "type",
 - "preexisting": true if this bug already existed in the codebase before these patches were applied, false if the issue was newly introduced by the reviewed patchset.
 - "locations": An array of objects, each containing "file", "function_or_symbol", "line", "code_snippet" and "why_this_location_matters".
 Each object in the 'dismissed_concerns' array MUST use exactly the following keys: "type", "description", "reasoning", "locations". They mean the same as above, except that "description" is the candidate concern that was investigated and disproved, "reasoning" is the evidence proving it does not apply, and "locations" MUST cite the concrete disproving code (the exact guard, lock, cleanup path, or caller/callee implementation that proves the issue cannot occur — not merely repeating the suspected line from the diff).
+"#,
+    report_shape_note!(),
+    r#"
 
 Use the 'dismissed_concerns' array ONLY for candidate concerns that you considered plausible, investigated, and disproved with concrete evidence. This is especially important when you first suspect a concern and then follow the evidence chain proving that it does NOT apply.
 
@@ -360,7 +373,8 @@ Example Output:
     }
   ]
 }
-```"#;
+```"#
+);
 
 // ---------------------------------------------------------------------------
 // Validation Logic
@@ -2274,6 +2288,7 @@ mod tests {
             "MUST cite the concrete disproving code",
             "Citing a single caller",
             "unpaired API/lifecycle call",
+            report_shape_note!(),
         ] {
             assert!(
                 STAGE_JSON_SCHEMA_EXAMPLE.contains(required),

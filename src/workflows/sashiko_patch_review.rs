@@ -34,7 +34,7 @@ use crate::workflows::linux_patch_review::{
     enrich_post_verification_output, enrich_verification_output, extra_prompt_paths_for_items,
     extra_prompt_paths_for_state, format_post_verification_feedback,
     format_verification_stage_feedback, has_valid_proof_location, record_verified_findings,
-    validate_post_verification_batch_output, validate_verification_stage_output,
+    report_shape_note, validate_post_verification_batch_output, validate_verification_stage_output,
 };
 
 /// State container for a Sashiko patch review run.
@@ -293,7 +293,8 @@ After:
 - Wrap prose lines at 78 characters or fewer (keep indented 'Before:' and 'After:' example lines concise as well, though long CLI commands, URLs, or output lines may exceed 78 characters when necessary).
 - Summarize the change itself (do not list review findings or issues here)."#;
 
-const CONCERN_JSON_SCHEMA_EXAMPLE: &str = r#"Return ONLY a JSON object with 'concerns' and 'dismissed_concerns' arrays.
+const CONCERN_JSON_SCHEMA_EXAMPLE: &str = concat!(
+    r#"Return ONLY a JSON object with 'concerns' and 'dismissed_concerns' arrays.
 Each object in the 'concerns' array MUST use exactly the following keys: "type", "description", "reasoning", "preexisting", "locations".
 Each object in the 'dismissed_concerns' array MUST use exactly the following keys: "type", "description", "reasoning", "locations".
 In each 'dismissed_concerns' object, "description" is the candidate concern that was investigated and disproved, "reasoning" is the step-by-step explanation of why it is not a bug (citing the exact guard, caller, or invariant), and "locations" MUST cite the concrete disproving code (file, function_or_symbol, line, verbatim code_snippet, and why_this_location_matters).
@@ -304,6 +305,9 @@ NO DISMISSAL WITHOUT VERIFIED PROOF: To place a candidate issue in 'dismissed_co
 - Never dismiss an unpaired lifecycle/state transition (e.g., claiming a task, worktree, or outbox row without a matching release/cleanup/terminal status on error or cancellation), a swallowed error, or clearing/overwriting state before downstream consumers read it by rationalizing that the side effect is a "harmless no-op" or "rare edge case".
 
 SPECIFICITY REQUIREMENT: When reporting a concern or dismissed_concern, cite exact function name(s), file path(s), and line number(s) when known. Do not invent line numbers; use null when exact values are unknown.
+"#,
+    report_shape_note!(),
+    r#"
 
 Example Output:
 ```json
@@ -342,7 +346,8 @@ Example Output:
     }
   ]
 }
-```"#;
+```"#
+);
 
 // ---------------------------------------------------------------------------
 // Stage Table Definitions
