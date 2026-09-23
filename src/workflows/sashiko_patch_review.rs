@@ -29,7 +29,7 @@ use crate::workflows::guard::{normalize_stage_name, sanitize_guide_name};
 use crate::workflows::linux_patch_review::{
     AnalysisStage, ConflictResolutionOutput, ConsolidationStage, LinuxPatchReviewState,
     PlanningOutput, PrescreenOutput, SERIES_CONTEXT_PLACEHOLDER, StageConcernsOutput,
-    VerificationOutput,
+    VerificationOutput, report_shape_note,
 };
 
 /// State container for a Sashiko patch review run.
@@ -246,9 +246,13 @@ Provide a concise 1-2 sentence plain-text summary explaining what this commit/ch
 - Wrap lines at 78 characters or fewer.
 - Summarize the change itself (do not list review findings or issues here)."#;
 
-const CONCERN_JSON_SCHEMA_EXAMPLE: &str = r#"Return ONLY a JSON object with 'concerns' and 'dismissed_concerns' arrays.
+const CONCERN_JSON_SCHEMA_EXAMPLE: &str = concat!(
+    r#"Return ONLY a JSON object with 'concerns' and 'dismissed_concerns' arrays.
 Each object in the 'concerns' array MUST use exactly the following keys: "type", "description", "reasoning", "preexisting", "locations".
 Each object in the 'dismissed_concerns' array MUST use exactly the following keys: "type", "description", "reasoning", "locations".
+"#,
+    report_shape_note!(),
+    r#"
 Do not invent line numbers; use null when exact values are unknown.
 
 Example Output:
@@ -288,7 +292,8 @@ Example Output:
     }
   ]
 }
-```"#;
+```"#
+);
 
 // ---------------------------------------------------------------------------
 // Stage Table Definitions

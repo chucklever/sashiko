@@ -284,7 +284,21 @@ Follow the formatting rules strictly. Do not use markdown headers or ALL CAPS sh
 
 SPECIFICITY REQUIREMENT: Each inline comment MUST reference the exact function name, file, line number when known, and specific triggering condition. Prefer the finding's `locations` field when present. Do not produce vague summaries like 'potential issue in error handling'. State precisely what goes wrong, where, and under what circumstances. Do not invent line numbers; if the exact line is unavailable, anchor the comment to the nearest verified function or symbol and explain the triggering condition."#;
 
-const STAGE_JSON_SCHEMA_EXAMPLE: &str = r#"
+// A macro rather than a const so that the sentence can be spliced into
+// the const schema texts with concat!, which takes literals only.
+macro_rules! report_shape_note {
+    () => {
+        "The 'concerns' and 'dismissed_concerns' arrays are the only two keys of the top-level object, and each is a sibling of the other. Close every concern object with '}' and the 'concerns' array with ']' before writing the 'dismissed_concerns' key; it never appears inside a concern object."
+    };
+}
+pub(crate) use report_shape_note;
+
+/// States where dismissed_concerns sits in a concerns report. Every
+/// prompt that asks for the StageConcernsOutput shape carries it.
+pub const REPORT_SHAPE_NOTE: &str = report_shape_note!();
+
+const STAGE_JSON_SCHEMA_EXAMPLE: &str = concat!(
+    r#"
 TodoWrite compatibility: vendored prompts may ask you to add tasks or suspected bugs to TodoWrite. Do not call or mention TodoWrite. Treat those instructions as an internal checklist only. If that checklist identifies a concrete suspected bug, carry it forward as a JSON concern with file, function_or_symbol, line when known, triggering condition, and evidence. Do not output generic checklist progress as a concern.
 
 Once you have gathered sufficient information, return ONLY a JSON object with 'concerns' and 'dismissed_concerns' arrays.
@@ -296,6 +310,9 @@ Each object in the 'concerns' array MUST use exactly the following keys: "type",
 - "preexisting": true if this bug already existed in the codebase before these patches were applied, false if the issue was newly introduced by the reviewed patchset.
 - "locations": An array of objects, each containing "file", "function_or_symbol", "line", "code_snippet" and "why_this_location_matters".
 Each object in the 'dismissed_concerns' array MUST use exactly the following keys: "type", "description", "reasoning", "locations". They mean the same as above, except that "description" is the candidate concern that was investigated and disproved, and "reasoning" is the evidence proving it does not apply.
+"#,
+    report_shape_note!(),
+    r#"
 
 Use the 'dismissed_concerns' array ONLY for candidate concerns that you considered plausible, investigated, and disproved with concrete evidence. This is especially important when you first suspect a concern and then follow the evidence chain proving that it does NOT apply.
 
@@ -340,7 +357,8 @@ Example Output:
     }
   ]
 }
-```"#;
+```"#
+);
 
 // ---------------------------------------------------------------------------
 // Validation Logic
@@ -870,6 +888,7 @@ Aggregated Dismissed Concerns:
 Return ONLY a JSON object with 'concerns' and 'dismissed_concerns' arrays.
 Each object in the 'concerns' array MUST use exactly the following keys: "type", "description", "reasoning", "preexisting", "locations".
 Each object in the 'dismissed_concerns' array MUST use exactly the following keys: "type", "description", "reasoning", "locations".
+{REPORT_SHAPE_NOTE}
 Preserve the most precise location details from the input. Do not invent line numbers; use null when exact values are unknown.
 
 Example Output:
@@ -1406,6 +1425,7 @@ mod tests {
             "\"preexisting\": true if this bug already existed",
             "\"reasoning\": A step-by-step explanation.",
             "the candidate concern that was investigated and disproved",
+            REPORT_SHAPE_NOTE,
         ] {
             assert!(
                 STAGE_JSON_SCHEMA_EXAMPLE.contains(required),
