@@ -202,7 +202,13 @@ pub struct PlanningOutput {
     pub stage_efforts: std::collections::BTreeMap<String, String>,
 }
 
+// The report structs below reject unknown keys. A report that carries a
+// key the schema does not name has put something somewhere else, a
+// dismissal under a misspelled key say, and with unknown keys ignored
+// the stage would accept the report and drop what the model wrote. The
+// rejection reaches the retry that asks for the expected arrays.
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct StageConcernsOutput {
     pub concerns: Vec<Value>,
     #[serde(default)]
@@ -223,6 +229,7 @@ pub struct DeduplicationOutput {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct VerificationOutput {
     pub findings: Vec<Value>,
     pub inconclusive_concerns: Vec<Value>,
@@ -233,6 +240,7 @@ pub struct VerificationOutput {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PostVerificationOutput {
     pub findings: Vec<Value>,
     #[serde(default)]
@@ -6223,5 +6231,46 @@ mod tests {
         );
         assert!(spoofed_finding.get("prior_attribution").is_none());
         assert!(spoofed_finding.get("prior_source_ids").is_none());
+    }
+
+    #[test]
+    fn test_stage_output_rejects_an_unknown_key() {
+        // The model put its dismissals under a key the schema does not
+        // name. Ignoring the key would accept the report and drop them,
+        // so the stage has to reject it and ask again.
+        let text = r#"{"concerns":[],"dismissed":[{"type":"Overflow","description":"d","reasoning":"r","locations":[]}]}"#;
+        let parsed = crate::workflow::output::parse_json_from_text::<StageConcernsOutput>(text);
+        assert!(
+            parsed.is_err(),
+            "a report with an unknown key must not pass as the stage report: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_verification_output_rejects_an_unknown_key() {
+        let text =
+            r#"{"findings":[],"inconclusive_concerns":[],"dismissed_concerns":[],"concerns":[]}"#;
+        let parsed = crate::workflow::output::parse_json_from_text::<VerificationOutput>(text);
+        assert!(
+            parsed.is_err(),
+            "a report with an unknown key must not pass as the verification report: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_post_verification_output_rejects_an_unknown_key() {
+        let text = r#"{"findings":[],"hard_cases":[]}"#;
+        let parsed = crate::workflow::output::parse_json_from_text::<PostVerificationOutput>(text);
+        assert!(
+            parsed.is_err(),
+            "a report with an unknown key must not pass as the post-verification report: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_stage_output_accepts_a_report_without_dismissals() {
+        let text = r#"{"concerns": []}"#;
+        let parsed = crate::workflow::output::parse_json_from_text::<StageConcernsOutput>(text);
+        assert!(parsed.is_ok(), "{parsed:?}");
     }
 }
