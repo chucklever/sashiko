@@ -437,7 +437,17 @@ PRE-EXISTING ISSUES: If any finding has `"preexisting": true`, include it in the
 
 PRIOR-VERSION ATTRIBUTION: If a finding includes `"prior_attribution"` with an `"attribution_line"` (for example `"As reported by Dan Carpenter on v2"`), begin that finding's comment with `<attribution_line> [N], ...` integrated naturally into the opening sentence (or `<attribution_line>, ...` when `reference_url` is absent). If the finding is also pre-existing, the attribution comes first. Number footnotes sequentially (`[1]`, `[2]`, ...) across the review and list all `[N] <reference_url>` entries together at the very bottom of the entire review email after all inline comments. Print only the reviewer's display name—never include their email address (`<...>`) in the comment text. Never distinguish between findings raised by fresh analysis vs prior-feedback in the email, never credit anyone else, never credit Sashiko or earlier Sashiko reviews, and use no backticks or markdown."#;
 
-const STAGE_JSON_SCHEMA_EXAMPLE: &str = r#"
+// A macro rather than a const so that the sentence can be spliced into
+// the const schema texts with concat!, which takes literals only.
+macro_rules! report_shape_note {
+    () => {
+        "The 'concerns' and 'dismissed_concerns' arrays are the only two keys of the top-level object, and each is a sibling of the other. Close every concern object with '}' and the 'concerns' array with ']' before writing the 'dismissed_concerns' key; it never appears inside a concern object."
+    };
+}
+pub(crate) use report_shape_note;
+
+const STAGE_JSON_SCHEMA_EXAMPLE: &str = concat!(
+    r#"
 Checklists: guides may ask you to add tasks or suspected bugs to a checklist. Keep that checklist internal to your reasoning. If it identifies a concrete suspected bug, carry it forward as a JSON concern with file, function_or_symbol, line when known, triggering condition, and evidence. Do not output generic checklist progress as a concern.
 
 RUNNING CANDIDATE LEDGER: Across tool turns, maintain a short numbered list of every candidate bug you suspect or verify in your thoughts. Before emitting your final JSON, check every item on your numbered list to ensure none were forgotten during later tool calls.
@@ -452,6 +462,9 @@ Each object in the 'concerns' array MUST use exactly the following keys: "type",
 - "locations": An array of objects, each containing "file", "function_or_symbol", "line", "code_snippet", "side" and "why_this_location_matters".
 - "side": "PARENT" if commenting on deleted or pre-patch code (e.g., '-' lines in the diff or baseline code), or "REVISION" if commenting on newly added or modified code (e.g., '+' lines in the diff or post-patch code). Default to "REVISION" when commenting on unchanged context lines.
 Each object in the 'dismissed_concerns' array MUST use exactly the following keys: "type", "description", "reasoning", "locations". They mean the same as above, except that "description" is the candidate concern that was investigated and disproved (plain text, never use markdown backticks), "reasoning" is the plain-text evidence proving it does not apply (never use markdown backticks), and "locations" MUST cite the concrete disproving code (the exact guard, lock, cleanup path, or caller/callee implementation that proves the issue cannot occur — not merely repeating the suspected line from the diff).
+"#,
+    report_shape_note!(),
+    r#"
 
 Use the 'dismissed_concerns' array ONLY for candidate concerns that you considered plausible, investigated, and disproved with concrete evidence. This is especially important when you first suspect a concern and then follow the evidence chain proving that it does NOT apply.
 
@@ -512,7 +525,8 @@ Example Output:
     }
   ]
 }
-```"#;
+```"#
+);
 
 // ---------------------------------------------------------------------------
 // Validation Logic
@@ -4456,6 +4470,7 @@ mod tests {
             "unpaired API/lifecycle call",
             "PRE-EXISTING BUGS: Do not actively hunt for unrelated bugs",
             "Never silently drop a real pre-existing bug",
+            report_shape_note!(),
         ] {
             assert!(
                 STAGE_JSON_SCHEMA_EXAMPLE.contains(required),
