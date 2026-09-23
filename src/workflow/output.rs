@@ -193,7 +193,7 @@ where
 /// Parses JSON from text with fallback extraction of embedded JSON objects.
 pub fn parse_json_from_text<T: DeserializeOwned>(raw_text: &str) -> Result<T, String> {
     let cleaned = crate::utils::clean_json_string(raw_text);
-    let primary_err = match serde_json::from_str::<T>(&cleaned) {
+    let whole_err = match serde_json::from_str::<T>(&cleaned) {
         Ok(val) => return Ok(val),
         Err(e) => e,
     };
@@ -203,14 +203,25 @@ pub fn parse_json_from_text<T: DeserializeOwned>(raw_text: &str) -> Result<T, St
 
     // Try finding JSON objects in text (e.g. within ```json ``` blocks or braces)
     let candidates = find_json_candidates(raw_text);
+    let mut candidate_err = None;
     for cand in candidates.into_iter().rev() {
-        if let Ok(val) = serde_json::from_value::<T>(cand) {
-            return Ok(val);
-        }
+        match serde_json::from_value::<T>(cand) {
+            Ok(val) => return Ok(val),
+            Err(e) => candidate_err.get_or_insert(e),
+        };
     }
 
+    // The retry feedback carries the serde error so the model learns
+    // which rule it broke, such as the name of an unknown key. When the
+    // text is itself a JSON document, the whole-text error names the
+    // fault; otherwise the last embedded object is the likeliest report
+    // and its error is the useful one.
+    let reason = match candidate_err {
+        Some(e) if !cleaned.starts_with(['{', '[']) => e,
+        _ => whole_err,
+    };
     Err(format!(
-        "Failed to parse JSON from output ({primary_err}): {}",
+        "Failed to parse JSON from output ({reason}): {}",
         crate::utils::utf8_prefix(raw_text, 200)
     ))
 }
@@ -319,5 +330,25 @@ mod tests {
                 count: 7
             }
         );
+    }
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    #[serde(deny_unknown_fields)]
+    struct StrictOutput {
+        name: String,
+    }
+
+    #[test]
+    fn test_parse_error_names_the_unknown_key() {
+        let raw = r#"{"name": "x", "summary": "extra"}"#;
+        let err = parse_json_from_text::<StrictOutput>(raw).unwrap_err();
+        assert!(err.contains("unknown field `summary`"), "{err}");
+    }
+
+    #[test]
+    fn test_parse_error_names_the_embedded_object_fault() {
+        let raw = "Here is the result:\n```json\n{\"name\": \"x\", \"summary\": 1}\n```";
+        let err = parse_json_from_text::<StrictOutput>(raw).unwrap_err();
+        assert!(err.contains("unknown field `summary`"), "{err}");
     }
 }
