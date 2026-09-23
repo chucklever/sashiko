@@ -94,7 +94,15 @@ pub struct PlanningOutput {
     pub relevant_stages: Vec<String>,
 }
 
+// The report structs below name their primary array as a required key
+// and reject unknown keys, so that an inner object salvaged from a
+// malformed response cannot pass as the report. With the array
+// defaulting, a bare concern or location object, or the empty object
+// a code snippet such as "x = {}" yields, would parse as an empty
+// report and the retry that would have recovered the findings never
+// runs.
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct StageConcernsOutput {
     pub concerns: Vec<Value>,
     #[serde(default)]
@@ -102,6 +110,7 @@ pub struct StageConcernsOutput {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct VerificationOutput {
     pub findings: Vec<Value>,
     pub hard_cases: Vec<Value>,
@@ -109,6 +118,7 @@ pub struct VerificationOutput {
 }
 
 #[derive(Deserialize, Serialize, Debug, Clone, Default)]
+#[serde(deny_unknown_fields)]
 pub struct PostVerificationOutput {
     pub findings: Vec<Value>,
     #[serde(default)]
@@ -3142,5 +3152,53 @@ mod tests {
             ])
         );
         let _ = &mut ver_out;
+    }
+
+    #[test]
+    fn test_stage_output_rejects_a_concern_object_as_the_report() {
+        // The model closed the concern's locations array and kept writing
+        // at that depth, so dismissed_concerns sits inside the concern and
+        // the root object never closes. The concern object itself is
+        // balanced, so the embedded-object fallback offers it as the
+        // report. Accepting it drops the concern and keeps the dismissal.
+        let text = r#"{"concerns":[{"type":"Leak","description":"d","reasoning":"r","preexisting":false,"locations":[{"file":"f.c","function_or_symbol":"fn","line":1,"code_snippet":"x","why_this_location_matters":"w"}],"dismissed_concerns":[{"type":"Overflow","description":"d","reasoning":"r","locations":[]}]}"#;
+        let parsed = crate::workflow::output::parse_json_from_text::<StageConcernsOutput>(text);
+        assert!(
+            parsed.is_err(),
+            "a concern object must not pass as the stage report: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_stage_output_rejects_an_empty_object_from_a_snippet() {
+        // Same unclosed root as above, but the code snippet carries a
+        // brace pair. The fallback scan does not track string context,
+        // so that pair is offered as a candidate; an empty object must
+        // not pass as a report with nothing in it.
+        let text = r#"{"concerns":[{"type":"Leak","description":"d","reasoning":"r","preexisting":false,"locations":[{"file":"f.c","function_or_symbol":"fn","line":1,"code_snippet":"struct kstat stat = {};","why_this_location_matters":"w"}],"dismissed_concerns":[]}"#;
+        let parsed = crate::workflow::output::parse_json_from_text::<StageConcernsOutput>(text);
+        assert!(
+            parsed.is_err(),
+            "an empty object must not pass as the stage report: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_verification_output_rejects_a_finding_object_as_the_report() {
+        // The verification stage shares the fallback parser, so the same
+        // mis-nesting must not publish a review with zero findings.
+        let text = r#"{"findings":[{"problem":"p","severity":"High","severity_explanation":"e","preexisting":false,"locations":[{"file":"f.c","function_or_symbol":"fn","line":1,"code_snippet":"x = {}","why_this_location_matters":"w"}]"#;
+        let parsed = crate::workflow::output::parse_json_from_text::<VerificationOutput>(text);
+        assert!(
+            parsed.is_err(),
+            "a finding object must not pass as the verification report: {parsed:?}"
+        );
+    }
+
+    #[test]
+    fn test_stage_output_accepts_a_report_without_dismissals() {
+        let text = r#"{"concerns": []}"#;
+        let parsed = crate::workflow::output::parse_json_from_text::<StageConcernsOutput>(text);
+        assert!(parsed.is_ok(), "{parsed:?}");
     }
 }
