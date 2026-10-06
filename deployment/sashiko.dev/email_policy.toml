@@ -372,3 +372,15 @@ lists = ["linux-usb@vger.kernel.org"]
 reply_to_author = true
 send_positive_review = true
 cc = ["linux-usb@vger.kernel.org"]
+
+[subsystems.linux-fscrypt]
+lists = ["linux-fscrypt@vger.kernel.org"]
+reply_all = true
+reply_to_author = true
+cc = ["linux-fscrypt@vger.kernel.org"]
+
+[subsystems.fsverity]
+lists = ["fsverity@lists.linux.dev"]
+reply_all = true
+reply_to_author = true
+cc = ["fsverity@lists.linux.dev"]
