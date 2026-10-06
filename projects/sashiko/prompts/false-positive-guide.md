@@ -200,6 +200,42 @@ Do not second-guess how a feature is divided across commits in a series:
   in `src/` at the series head (`Series End Commit` / `HEAD`). If the actual
   Rust code enforces the invariant, discard the concern.
 
+### 13. Asserting what a dependency does
+
+The review tools read this repository. They do not read the source of the
+crates named in `Cargo.lock`. A statement about what happens inside an external
+crate (`lettre`, `tokio`, `axum`, `reqwest`, `libsql`, or any other) is
+something you recall, not something you read, so it is not evidence under the
+core principle.
+
+"Do not give code the benefit of the doubt" does not reverse this. That rule
+covers code in this repository, which you can read. Being unable to read a
+crate is not evidence that the crate lacks a safeguard, and "I have no evidence
+otherwise, so I must assume it is unsafe" is a guess.
+
+When a concern turns on how a crate behaves:
+
+- Look in this repository for evidence of that behavior: a test assertion that
+  pins it, a comment or commit message that states it, or a caller that already
+  relies on it at the `Baseline SHA`. A test assertion is concrete evidence.
+- If the patch states the crate's behavior and nothing you have read
+  contradicts it, do not assert the opposite.
+- If the question stays open, the finding is speculative. Cap it at Medium,
+  word the crate's behavior as the unverified assumption ("if `lettre` does not
+  ..."), and name what would settle it. Never state "crate X does not do Y" as
+  fact.
+- If the patch only moves an existing call into a new function, the crate's
+  behavior at that call did not change. Apply pattern 8.
+
+- Bad: "`lettre` does not insert a `--` separator, so a recipient that begins
+  with a hyphen is parsed as an option." (Nothing read supports the first
+  clause.)
+- Bad: "`lettre` does not set `kill_on_drop(true)`, so the timeout leaks the
+  child process."
+- Good: "Speculative: the timeout relies on `lettre` killing the child when the
+  future is dropped. The comment says it does; no test in this patch shows it.
+  A test with a stub that never exits would settle it."
+
 ## Before you report
 
 For each finding, confirm you can answer all of these. If you cannot answer
