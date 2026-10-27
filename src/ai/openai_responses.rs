@@ -29,6 +29,7 @@ use crate::ai::{
     AiMessage, AiProvider, AiRequest, AiResponse, AiResponseFormat, AiRole, AiTool, AiUsage,
     ProviderCapabilities, ToolCall,
 };
+use crate::settings::ServiceTier;
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
@@ -68,6 +69,10 @@ pub struct ResponsesRequest {
     pub store: bool,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub include: Vec<String>,
+    /// Processing tier.  Omitted unless configured, which leaves the
+    /// request on the account's default tier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ServiceTier>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -169,6 +174,11 @@ pub struct ResponsesResponse {
     pub output: Vec<ResponsesItem>,
     #[serde(default)]
     pub usage: ResponsesUsage,
+    /// The tier that processed the request, echoed whenever the request
+    /// named one.  A request sent as "flex" that the account could not run
+    /// there comes back "default", and this is the only place that shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -252,6 +262,7 @@ pub struct OpenAiResponsesClient {
     context_window_size: usize,
     max_tokens: u32,
     effort: Option<String>,
+    service_tier: Option<ServiceTier>,
     /// Learned by post_json; see there.
     temperature_unsupported: AtomicBool,
     client: Client,
@@ -265,6 +276,7 @@ impl OpenAiResponsesClient {
         max_tokens: u32,
         api_timeout_secs: u64,
         effort: Option<String>,
+        service_tier: Option<ServiceTier>,
     ) -> Result<Self> {
         let client = build_http_client(api_timeout_secs)?;
         let base_url = normalize_base_url(&base_url, ENDPOINT_PATH)?;
@@ -275,6 +287,7 @@ impl OpenAiResponsesClient {
             context_window_size,
             max_tokens,
             effort,
+            service_tier,
             temperature_unsupported: AtomicBool::new(false),
             client,
         })
@@ -295,6 +308,7 @@ impl OpenAiResponsesClient {
             .effort
             .clone()
             .map(|effort| ResponsesReasoningConfig { effort });
+        responses_req.service_tier = self.service_tier;
         Ok(responses_req)
     }
 
@@ -308,7 +322,7 @@ impl OpenAiResponsesClient {
         .await?;
         let details = response.usage.output_tokens_details.as_ref();
         tracing::info!(
-            "OpenAI response received. Tokens: in={}, out={}, reasoning={}, cache_write={}",
+            "OpenAI response received. Tokens: in={}, out={}, reasoning={}, cache_write={}, tier={}",
             response.usage.input_tokens,
             response.usage.output_tokens,
             details.and_then(|d| d.reasoning_tokens).unwrap_or(0),
@@ -318,6 +332,7 @@ impl OpenAiResponsesClient {
                 .as_ref()
                 .and_then(|d| d.cache_write_tokens)
                 .unwrap_or(0),
+            response.service_tier.as_deref().unwrap_or("-"),
         );
         Ok(response)
     }
@@ -486,6 +501,8 @@ fn translate_ai_request(request: AiRequest, max_tokens: u32) -> Result<Responses
         text,
         store: false,
         include: vec![INCLUDE_ENCRYPTED_REASONING.to_string()],
+        // Set by the caller, which holds the configured tier.
+        service_tier: None,
     })
 }
 
@@ -771,6 +788,7 @@ mod tests {
             65536,
             60,
             effort.map(str::to_string),
+            None,
         )
         .unwrap()
     }
@@ -795,6 +813,7 @@ mod tests {
                 65536,
                 60,
                 None,
+                None,
             )
             .is_err()
         );
@@ -818,6 +837,7 @@ mod tests {
         assert_eq!(json["store"], false);
         assert_eq!(json["include"][0], "reasoning.encrypted_content");
         assert!(json.get("reasoning").is_none());
+        assert!(json.get("service_tier").is_none());
 
         Ok(())
     }
@@ -1297,6 +1317,16 @@ mod tests {
         assert_eq!(json["reasoning"]["effort"], "high");
     }
 
+    #[test]
+    fn configured_service_tier_reaches_the_request() {
+        let mut client = test_client("https://api.openai.com/v1", "gpt-5.4", None);
+        client.service_tier = Some(ServiceTier::Flex);
+
+        let built = client.build_request(sample_request()).unwrap();
+        let json = serde_json::to_value(&built).unwrap();
+        assert_eq!(json["service_tier"], "flex");
+    }
+
     #[tokio::test]
     async fn temperature_refusal_resends_without_the_field() {
         use crate::ai::openai_common::tests::{TEMPERATURE_REFUSED_RESPONSES, serve_replies};
@@ -1332,6 +1362,7 @@ mod tests {
             65536,
             60,
             Some("medium".to_string()),
+            None,
         )
         .unwrap();
 

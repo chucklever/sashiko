@@ -19,6 +19,7 @@ use crate::ai::{
     AiProvider, AiRequest, AiResponse, AiResponseFormat, AiRole, AiUsage, ProviderCapabilities,
     ToolCall,
 };
+use crate::settings::ServiceTier;
 use anyhow::Result;
 use async_trait::async_trait;
 use reqwest::Client;
@@ -46,6 +47,10 @@ pub struct OpenAiRequest {
     pub reasoning_effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub response_format: Option<Value>,
+    /// Processing tier.  Omitted unless configured, which leaves the
+    /// request on the account's default tier.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<ServiceTier>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -102,6 +107,11 @@ pub struct OpenAiResponse {
     pub choices: Vec<OpenAiChoice>,
     #[serde(default)]
     pub usage: OpenAiUsage,
+    /// The tier that processed the request, echoed whenever the request
+    /// named one.  A request sent as "flex" that the account could not run
+    /// there comes back "default", and this is the only place that shows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -155,6 +165,7 @@ pub struct OpenAiCompatClient {
     max_tokens: u32,
     provider_type: OpenAiProviderType,
     effort: Option<String>,
+    service_tier: Option<ServiceTier>,
     send_reasoning_content: bool,
     /// Learned by post_json; see there.
     temperature_unsupported: AtomicBool,
@@ -162,6 +173,7 @@ pub struct OpenAiCompatClient {
 }
 
 impl OpenAiCompatClient {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         base_url: String,
         provider_type: OpenAiProviderType,
@@ -170,6 +182,7 @@ impl OpenAiCompatClient {
         max_tokens: u32,
         api_timeout_secs: u64,
         effort: Option<String>,
+        service_tier: Option<ServiceTier>,
     ) -> Result<Self> {
         let client = build_http_client(api_timeout_secs)?;
         let base_url = normalize_base_url(&base_url, ENDPOINT_PATH)?;
@@ -181,6 +194,7 @@ impl OpenAiCompatClient {
             max_tokens,
             provider_type,
             effort,
+            service_tier,
             send_reasoning_content: false,
             client,
             temperature_unsupported: AtomicBool::new(false),
@@ -230,6 +244,7 @@ impl OpenAiCompatClient {
         // Omitted unless configured: some endpoints that do not implement
         // reasoning_effort reject the whole request over an unknown field.
         openai_req.reasoning_effort = self.effort.clone();
+        openai_req.service_tier = self.service_tier;
         Ok(openai_req)
     }
 
@@ -242,9 +257,10 @@ impl OpenAiCompatClient {
         )
         .await?;
         tracing::info!(
-            "OpenAI response received. Tokens: in={}, out={}",
+            "OpenAI response received. Tokens: in={}, out={}, tier={}",
             response.usage.prompt_tokens,
-            response.usage.completion_tokens
+            response.usage.completion_tokens,
+            response.service_tier.as_deref().unwrap_or("-"),
         );
         Ok(response)
     }
@@ -392,6 +408,7 @@ fn translate_ai_request(
         // Set by the caller, which holds the configured level; the translation
         // has no view of it.
         reasoning_effort: None,
+        service_tier: None,
         response_format,
     })
 }
@@ -1057,6 +1074,7 @@ mod tests {
                 total_tokens: 30,
                 prompt_tokens_details: None,
             },
+            service_tier: None,
         };
 
         let ai_resp = translate_ai_response(openai_resp)?;
@@ -1096,6 +1114,7 @@ mod tests {
                     cached_tokens: Some(cached_tokens),
                 }),
             },
+            service_tier: None,
         };
 
         // prompt_tokens stays whole: the cached count is a breakdown of it,
@@ -1191,6 +1210,7 @@ mod tests {
                 total_tokens: 40,
                 prompt_tokens_details: None,
             },
+            service_tier: None,
         };
 
         let ai_resp = translate_ai_response(openai_resp)?;
@@ -1217,6 +1237,7 @@ mod tests {
                 total_tokens: 10,
                 prompt_tokens_details: None,
             },
+            service_tier: None,
         };
 
         let result = translate_ai_response(openai_resp);
@@ -1270,6 +1291,7 @@ mod tests {
             max_tokens,
             60,
             effort.map(str::to_string),
+            None,
         )
         .unwrap()
     }
@@ -1341,6 +1363,7 @@ mod tests {
             128,
             5,
             None,
+            None,
         )?;
         let request = AiRequest {
             system: None,
@@ -1398,6 +1421,7 @@ mod tests {
                 8192,
                 128,
                 5,
+                None,
                 None,
             )?;
             let request = AiRequest {
@@ -1461,6 +1485,19 @@ mod tests {
 
         let json = serde_json::to_value(&built).unwrap();
         assert_eq!(json["reasoning_effort"], "high");
+    }
+
+    #[test]
+    fn configured_service_tier_reaches_the_request() {
+        let mut client = test_client("https://api.openai.com/v1", 65536, None);
+        let built = client.build_request(sample_request()).unwrap();
+        let json = serde_json::to_value(&built).unwrap();
+        assert!(json.get("service_tier").is_none());
+
+        client.service_tier = Some(ServiceTier::Flex);
+        let built = client.build_request(sample_request()).unwrap();
+        let json = serde_json::to_value(&built).unwrap();
+        assert_eq!(json["service_tier"], "flex");
     }
 
     fn request_at_zero_temperature() -> AiRequest {

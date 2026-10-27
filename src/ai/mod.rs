@@ -801,6 +801,7 @@ pub fn create_provider_from_ai(ai: &AiSettings) -> Result<Arc<dyn AiProvider>> {
             let max_tokens = compat.and_then(|c| c.max_tokens).unwrap_or(4096);
 
             let effort = compat.and_then(|c| c.effort.clone());
+            let service_tier = compat.and_then(|c| c.service_tier);
 
             // The endpoint the settings name, rather than the provider name,
             // decides the transport: both provider values reach the same
@@ -816,6 +817,15 @@ pub fn create_provider_from_ai(ai: &AiSettings) -> Result<Arc<dyn AiProvider>> {
                         "openai" => openai::OpenAiProviderType::OpenAi,
                         _ => openai::OpenAiProviderType::OpenAiCompatible,
                     };
+                    // Only OpenAI's own API accepts the field. Refusing here
+                    // beats sending it to an endpoint that may reject the
+                    // request, and beats dropping it, which would bill the
+                    // standard tier while the config promises flex.
+                    if provider_type == openai::OpenAiProviderType::OpenAiCompatible
+                        && service_tier.is_some()
+                    {
+                        bail!("service_tier requires provider = \"openai\"");
+                    }
 
                     let base_url = compat.and_then(|c| c.base_url.clone()).unwrap_or_else(|| {
                         openai::OpenAiCompatClient::default_base_url_for_model(&ai.model)
@@ -829,6 +839,7 @@ pub fn create_provider_from_ai(ai: &AiSettings) -> Result<Arc<dyn AiProvider>> {
                         max_tokens,
                         ai.api_timeout_secs,
                         effort,
+                        service_tier,
                     )?
                     .with_reasoning_content(compat.is_some_and(|c| c.send_reasoning_content));
 
@@ -846,6 +857,7 @@ pub fn create_provider_from_ai(ai: &AiSettings) -> Result<Arc<dyn AiProvider>> {
                         max_tokens,
                         ai.api_timeout_secs,
                         effort,
+                        service_tier,
                     )?))
                 }
                 other => bail!("Unsupported openai api: {}", other),
@@ -1765,6 +1777,7 @@ mod tests {
             effort: None,
             send_reasoning_content: false,
             api: api.map(str::to_string),
+            service_tier: None,
         };
 
         settings.ai.openai_compat = Some(compat(None));
@@ -1776,6 +1789,31 @@ mod tests {
         assert!(responses.contains("api=responses"));
 
         settings.ai.openai_compat = Some(compat(Some("assistants")));
+        assert!(create_provider(&settings).is_err());
+
+        Ok(())
+    }
+
+    /// The chat transport sends service_tier for OpenAI itself and refuses
+    /// it for a compatible endpoint rather than dropping it on the floor.
+    #[test]
+    fn test_service_tier_requires_openai_on_chat() -> Result<()> {
+        let mut settings = Settings::new().expect("Failed to load settings");
+        settings.ai.model = "gpt-5.4".to_string();
+        settings.ai.openai_compat = Some(crate::settings::OpenAiCompatSettings {
+            base_url: None,
+            context_window_size: None,
+            max_tokens: None,
+            effort: None,
+            send_reasoning_content: false,
+            api: None,
+            service_tier: Some(crate::settings::ServiceTier::Flex),
+        });
+
+        settings.ai.provider = "openai".to_string();
+        assert!(create_provider(&settings).is_ok());
+
+        settings.ai.provider = "openai-compatible".to_string();
         assert!(create_provider(&settings).is_err());
 
         Ok(())

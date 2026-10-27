@@ -573,3 +573,16 @@ request over `/v1/responses` is accepted. And model access is granted
 per endpoint, so a project can be told it has no access to the gpt-5.4
 family on chat completions while `/v1/responses` answers normally.
 Everything else in `[ai.openai_compat]` applies to both.
+
+`service_tier` picks the processing tier and is sent on both endpoints,
+omitted when unset. `"flex"` halves the per-token price in exchange
+for slower responses and a higher rate of 429s, which the usual retry
+absorbs. Most of a review's cost is uncached input, so on an expensive
+model this is the one setting that moves the bill. Two things go with
+it. Raise `api_timeout_secs` to at least 900: a flex response can
+outlast the default 300 seconds, and a request the client gives up on
+is resent in full and billed again. And check the `tier=` field on the
+"OpenAI response received" log line, which reports the tier that
+actually ran; a request the account could not run on flex comes back
+`default` at full price. Only OpenAI's own API accepts the field, so
+`provider = "openai-compatible"` refuses it at startup.
