@@ -408,7 +408,9 @@ pub enum PatchsetReviewOutcome {
 const CLEAN_PATCHSET_PREDICATE: &str = "
     EXISTS (
         SELECT 1 FROM reviews r
-        WHERE r.patchset_id = p.id AND r.status = 'Reviewed'
+        WHERE r.patchset_id = p.id
+          AND (r.status = 'Reviewed'
+               OR (r.status = 'Skipped' AND r.inherited_from_review_id IS NOT NULL))
     )
     AND NOT EXISTS (
         SELECT 1 FROM reviews r
@@ -428,7 +430,9 @@ const CLEAN_PATCHSET_PREDICATE: &str = "
           AND (
               SELECT COUNT(*) FROM reviews completed
               WHERE completed.patch_id = pa.id
-                AND completed.status = 'Reviewed'
+                AND (completed.status = 'Reviewed'
+                     OR (completed.status = 'Skipped'
+                         AND completed.inherited_from_review_id IS NOT NULL))
           ) < COALESCE(p.target_review_count, 1)
     )
     AND NOT EXISTS (
@@ -3315,7 +3319,8 @@ impl Database {
         let id_opt = self
             .query_returning_i64(
                 "UPDATE reviews
-                    SET status = 'In Review', interaction_id = NULL
+                    SET status = 'In Review', interaction_id = NULL,
+                        inherited_from_review_id = NULL, baseline_commit = NULL
                   WHERE id = (
                       SELECT id FROM reviews
                        WHERE patchset_id = ?
@@ -3475,15 +3480,24 @@ impl Database {
             > 0)
     }
 
+    /// Counts the finished reviews of a patch toward its target review
+    /// count. A Skipped row that inherited a clean verdict counts as one:
+    /// it is the pass that stood in for a model run, and a rerun that
+    /// raises the target expects it to be counted so the model runs once
+    /// more, not twice.
     pub async fn count_successful_reviews(
         &self,
         patchset_id: i64,
         patch_id: i64,
         _baseline_id: Option<i64>,
     ) -> Result<usize> {
-        let mut rows = self.conn
+        let mut rows = self
+            .conn
             .query(
-                "SELECT COUNT(*) FROM reviews WHERE patchset_id = ? AND patch_id = ? AND status = 'Reviewed'",
+                "SELECT COUNT(*) FROM reviews
+                 WHERE patchset_id = ? AND patch_id = ?
+                   AND (status = 'Reviewed'
+                        OR (status = 'Skipped' AND inherited_from_review_id IS NOT NULL))",
                 libsql::params![patchset_id, patch_id],
             )
             .await?;
@@ -11820,7 +11834,10 @@ impl Database {
                    )
                    AND (
                        SELECT COUNT(*) FROM reviews r
-                       WHERE r.patch_id = p.id AND r.status = 'Reviewed'
+                       WHERE r.patch_id = p.id
+                         AND (r.status = 'Reviewed'
+                              OR (r.status = 'Skipped'
+                                  AND r.inherited_from_review_id IS NOT NULL))
                    ) < ?
                  LIMIT 1",
                 libsql::params![patchset_id, target_review_count],
@@ -11833,10 +11850,16 @@ impl Database {
         let mut reviewed_rows = self
             .conn
             .query(
-                "SELECT 1 FROM reviews WHERE patchset_id = ? AND status = 'Reviewed' LIMIT 1",
+                "SELECT 1 FROM reviews
+                 WHERE patchset_id = ?
+                   AND (status = 'Reviewed'
+                        OR (status = 'Skipped' AND inherited_from_review_id IS NOT NULL))
+                 LIMIT 1",
                 libsql::params![patchset_id],
             )
             .await?;
+        // A series whose every patch inherited a clean verdict has no
+        // Reviewed row of its own, and is clean all the same.
         if reviewed_rows.next().await?.is_none() {
             return Ok(PatchsetReviewOutcome::Incomplete);
         }
@@ -13974,7 +13997,8 @@ impl Database {
         let active = self
             .query_returning_i64(
                 "UPDATE reviews
-                    SET status = 'In Review', interaction_id = NULL
+                    SET status = 'In Review', interaction_id = NULL,
+                        inherited_from_review_id = NULL, baseline_commit = NULL
                   WHERE id = ?
                     AND COALESCE(status, '') != 'Cancelled'
                     AND NOT EXISTS (
@@ -18655,6 +18679,176 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// A series whose only patch inherited a clean verdict is clean and
+    /// releasable, exactly as if the model had run and found nothing.
+    #[tokio::test]
+    async fn test_inherited_clean_skip_counts_as_a_clean_review() {
+        let db = setup_db().await;
+        let thread_id = db
+            .create_thread("root_inherited_embargo", "Inherited", 70000)
+            .await
+            .unwrap();
+        db.create_message(
+            "msg_inherited_embargo",
+            thread_id,
+            None,
+            "Author <author@example.com>",
+            "Inherited",
+            70000,
+            "body",
+            "list@example.com",
+            "",
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        let ps_id = db
+            .create_patchset(
+                thread_id,
+                None,
+                "msg_inherited_embargo",
+                "Inherited",
+                "Author <author@example.com>",
+                70000,
+                1,
+                1,
+                "list@example.com",
+                "",
+                None,
+                1,
+                None,
+                true,
+                None,
+                None,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let patch_id = db
+            .create_patch(ps_id, "msg_inherited_embargo", 1, "diff")
+            .await
+            .unwrap();
+
+        // The review being inherited from lives on another patch; any
+        // completed review id serves the foreign key here.
+        let prior_review = db
+            .create_review(ps_id, None, "test", "test", None, None)
+            .await
+            .unwrap();
+        db.complete_review(prior_review, "Reviewed", "done", None, None, None, None)
+            .await
+            .unwrap();
+        let review_id = db
+            .create_review(ps_id, Some(patch_id), "test", "test", None, None)
+            .await
+            .unwrap();
+        db.complete_review(
+            review_id,
+            "Skipped",
+            "Skipped: unchanged",
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        db.set_review_inherited_from(review_id, prior_review)
+            .await
+            .unwrap();
+        db.update_patch_status(patch_id, "Skipped").await.unwrap();
+        db.update_patchset_status(ps_id, "Reviewed").await.unwrap();
+
+        // Remove the helper row so only the inherited Skipped row remains.
+        db.conn
+            .execute(
+                "UPDATE reviews SET status = 'Cancelled' WHERE id = ?",
+                libsql::params![prior_review],
+            )
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().timestamp();
+        db.set_patchset_embargo_until(ps_id, now + 3600)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            db.get_patchset_review_outcome(ps_id).await.unwrap(),
+            PatchsetReviewOutcome::Clean
+        );
+        let releasable = db
+            .get_releasable_embargoed_patchsets(now, 10)
+            .await
+            .unwrap();
+        assert!(releasable.iter().any(|patchset| patchset.id == ps_id));
+        assert!(db.claim_patchset_embargo_release(ps_id, now).await.unwrap());
+
+        // The inherited row is one finished pass for the retry accounting.
+        assert_eq!(
+            db.count_successful_reviews(ps_id, patch_id, None)
+                .await
+                .unwrap(),
+            1
+        );
+
+        // Provenance alone proves nothing: a row that failed after the
+        // provenance was written neither counts nor makes the series clean.
+        db.conn
+            .execute(
+                "UPDATE reviews SET status = 'Failed' WHERE id = ?",
+                libsql::params![review_id],
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            db.count_successful_reviews(ps_id, patch_id, None)
+                .await
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.get_patchset_review_outcome(ps_id).await.unwrap(),
+            PatchsetReviewOutcome::Incomplete
+        );
+
+        // Reclaiming a row for a fresh model run drops the provenance so a
+        // review the model produces is never mistaken for an inherited one.
+        db.conn
+            .execute(
+                "UPDATE reviews SET status = 'Pending' WHERE id = ?",
+                libsql::params![review_id],
+            )
+            .await
+            .unwrap();
+        db.set_review_baseline_commit(review_id, "tree")
+            .await
+            .unwrap();
+        let reclaimed = db
+            .claim_pending_review_id(ps_id, Some(patch_id))
+            .await
+            .unwrap();
+        assert_eq!(reclaimed, Some(review_id));
+        let mut row = db
+            .conn
+            .query(
+                "SELECT inherited_from_review_id, baseline_commit FROM reviews WHERE id = ?",
+                libsql::params![review_id],
+            )
+            .await
+            .unwrap();
+        let row = row.next().await.unwrap().unwrap();
+        assert!(matches!(
+            row.get::<libsql::Value>(0).unwrap(),
+            libsql::Value::Null
+        ));
+        assert!(matches!(
+            row.get::<libsql::Value>(1).unwrap(),
+            libsql::Value::Null
+        ));
     }
 
     #[tokio::test]
