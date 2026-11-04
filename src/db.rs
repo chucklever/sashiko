@@ -377,6 +377,26 @@ pub struct ReleaseReview {
     pub findings: Vec<serde_json::Value>,
 }
 
+/// A completed review whose patch shares a Git patch ID with the patch
+/// under review. The patch ID is only the index: the caller compares `diff`
+/// byte for byte before trusting the match, because git patch-id ignores
+/// whitespace. Reviews with findings are included so the caller can see
+/// when the newest review of a diff was not clean.
+#[derive(Debug, Clone)]
+pub struct CleanReviewCandidate {
+    pub review_id: i64,
+    pub has_findings: bool,
+    pub patch_id: i64,
+    pub patchset_id: i64,
+    pub patchset_subject: String,
+    pub patchset_version: Option<u32>,
+    pub part_index: i64,
+    pub diff: String,
+    pub model: Option<String>,
+    pub prompts_hash: Option<String>,
+    pub baseline_commit: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PatchsetReviewOutcome {
     Clean,
@@ -11286,6 +11306,102 @@ impl Database {
         Ok(diffs)
     }
 
+    /// Returns the Git patch ID stored for `patch_id`, if the ingest path
+    /// computed one.
+    pub async fn get_patch_git_patch_id(&self, patch_id: i64) -> Result<Option<String>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT git_patch_id FROM patches WHERE id = ?",
+                libsql::params![patch_id],
+            )
+            .await?;
+        match rows.next().await? {
+            Some(row) => get_optional_text(&row, 0),
+            None => Ok(None),
+        }
+    }
+
+    /// Lists completed reviews of other patches that share `git_patch_id`,
+    /// newest first, created at or after `since`.
+    ///
+    /// Reviews that themselves inherited a verdict are left out so the
+    /// caller always lands on the review a model actually produced. Reviews
+    /// with findings are kept and flagged: a clean verdict is only reusable
+    /// when nothing newer disagreed with it. The limit keeps a patch
+    /// carried across many series from pulling every copy's diff out of the
+    /// database; the newest few are the ones worth comparing.
+    pub async fn find_clean_review_candidates(
+        &self,
+        git_patch_id: &str,
+        exclude_patch_id: i64,
+        since: i64,
+        limit: usize,
+    ) -> Result<Vec<CleanReviewCandidate>> {
+        let mut rows = self
+            .conn
+            .query(
+                "SELECT r.id, p.id, p.patchset_id, ps.subject, ps.version, p.part_index,
+                        p.diff, r.model, r.prompts_hash, r.baseline_commit,
+                        EXISTS (SELECT 1 FROM findings f WHERE f.review_id = r.id)
+                 FROM patches p
+                 JOIN reviews r ON r.patch_id = p.id
+                 JOIN patchsets ps ON ps.id = p.patchset_id
+                 WHERE p.git_patch_id = ?
+                   AND p.id != ?
+                   AND r.status = 'Reviewed'
+                   AND r.created_at >= ?
+                   AND r.inherited_from_review_id IS NULL
+                 ORDER BY r.created_at DESC, r.id DESC
+                 LIMIT ?",
+                libsql::params![git_patch_id, exclude_patch_id, since, limit as i64],
+            )
+            .await?;
+
+        let mut candidates = Vec::new();
+        while let Some(row) = rows.next().await? {
+            candidates.push(CleanReviewCandidate {
+                review_id: row.get(0)?,
+                patch_id: row.get(1)?,
+                patchset_id: row.get(2)?,
+                patchset_subject: get_optional_text(&row, 3)?.unwrap_or_default(),
+                patchset_version: get_optional_integer(&row, 4)?
+                    .and_then(|v| u32::try_from(v).ok()),
+                part_index: get_optional_integer(&row, 5)?.unwrap_or(0),
+                diff: crate::compression::get_compressed_string(&row, 6)?,
+                model: get_optional_text(&row, 7)?,
+                prompts_hash: get_optional_text(&row, 8)?,
+                baseline_commit: get_optional_text(&row, 9)?,
+                has_findings: row.get::<i64>(10)? != 0,
+            });
+        }
+        Ok(candidates)
+    }
+
+    /// Records the commit a review's worktree was checked out at.
+    pub async fn set_review_baseline_commit(&self, review_id: i64, commit: &str) -> Result<()> {
+        self.execute(
+            "UPDATE reviews SET baseline_commit = ? WHERE id = ?",
+            libsql::params![commit, review_id],
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Marks `review_id` as carrying the verdict of `from_review_id`.
+    pub async fn set_review_inherited_from(
+        &self,
+        review_id: i64,
+        from_review_id: i64,
+    ) -> Result<()> {
+        self.execute(
+            "UPDATE reviews SET inherited_from_review_id = ? WHERE id = ?",
+            libsql::params![from_review_id, review_id],
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn get_patch_by_git_patch_id(
         &self,
         git_patch_id: &str,
@@ -15925,6 +16041,203 @@ mod tests {
         assert!(
             index.next().await?.is_some(),
             "the foreign key column is indexed"
+        );
+        Ok(())
+    }
+
+    /// Creates a single-patch series whose patch carries `git_patch_id`, and
+    /// returns the patchset and patch ids.
+    async fn create_series_with_patch_id(
+        db: &Database,
+        tag: &str,
+        version: Option<u32>,
+        diff: &str,
+        git_patch_id: &str,
+    ) -> Result<(i64, i64)> {
+        let msg_id = format!("<{tag}@example.org>");
+        let thread_id = db.create_thread(&msg_id, tag, 1_700_000_000).await?;
+        db.create_message(
+            &msg_id,
+            thread_id,
+            None,
+            "Author <a@example.org>",
+            tag,
+            1_700_000_000,
+            "",
+            "",
+            "",
+            None,
+            None,
+        )
+        .await?;
+        let ps_id = db
+            .create_patchset(
+                thread_id,
+                None,
+                &msg_id,
+                tag,
+                "Author <a@example.org>",
+                1_700_000_000,
+                1,
+                1,
+                "",
+                "",
+                version,
+                1,
+                None,
+                false,
+                None,
+                None,
+            )
+            .await?
+            .expect("patchset created");
+        let patch_id = db
+            .create_patch_with_git_patch_id(ps_id, &msg_id, 1, diff, Some(git_patch_id))
+            .await?;
+        Ok((ps_id, patch_id))
+    }
+
+    async fn complete_clean_review(
+        db: &Database,
+        ps_id: i64,
+        patch_id: i64,
+        model: &str,
+    ) -> Result<i64> {
+        let review_id = db
+            .create_review(ps_id, Some(patch_id), "gemini", model, None, Some("p1"))
+            .await?;
+        db.complete_review(review_id, "Reviewed", "done", None, None, None, None)
+            .await?;
+        Ok(review_id)
+    }
+
+    /// The clean-review lookup returns finished reviews of other patches
+    /// that share a Git patch ID, newest first, flags the ones with
+    /// findings, and never returns a review that itself inherited its
+    /// verdict.
+    #[tokio::test]
+    async fn test_find_clean_review_candidates_filters_by_outcome() -> Result<()> {
+        let db = Database::new(&DatabaseSettings {
+            url: ":memory:".into(),
+            token: String::new(),
+        })
+        .await?;
+        db.migrate().await?;
+
+        let diff = "diff --git a/f.c b/f.c\n--- a/f.c\n+++ b/f.c\n@@ -1 +1 @@\n-a\n+b\n";
+        let pid = "0123456789abcdef0123456789abcdef01234567";
+
+        // v1: clean, the review to inherit from.
+        let (v1_ps, v1_patch) = create_series_with_patch_id(&db, "v1", Some(1), diff, pid).await?;
+        let v1_review = complete_clean_review(&db, v1_ps, v1_patch, "pro").await?;
+        db.set_review_baseline_commit(v1_review, "abc123").await?;
+        db.conn
+            .execute(
+                "UPDATE reviews SET created_at = 1000 WHERE id = ?",
+                libsql::params![v1_review],
+            )
+            .await?;
+
+        // v2: reviewed, but with a finding.
+        let (v2_ps, v2_patch) = create_series_with_patch_id(&db, "v2", Some(2), diff, pid).await?;
+        let v2_review = complete_clean_review(&db, v2_ps, v2_patch, "pro").await?;
+        db.create_finding(Finding {
+            review_id: v2_review,
+            severity: Severity::Low,
+            severity_explanation: None,
+            problem: "nit".to_string(),
+            preexisting: Some(false),
+            locations: None,
+        })
+        .await?;
+        db.conn
+            .execute(
+                "UPDATE reviews SET created_at = 1500 WHERE id = ?",
+                libsql::params![v2_review],
+            )
+            .await?;
+
+        // v3: still running.
+        let (v3_ps, v3_patch) = create_series_with_patch_id(&db, "v3", Some(3), diff, pid).await?;
+        db.create_review(v3_ps, Some(v3_patch), "gemini", "pro", None, None)
+            .await?;
+
+        // v4: skipped as an inherited copy of v1; must not be offered itself.
+        let (v4_ps, v4_patch) = create_series_with_patch_id(&db, "v4", Some(4), diff, pid).await?;
+        let v4_review = db
+            .create_review(v4_ps, Some(v4_patch), "gemini", "pro", None, Some("p1"))
+            .await?;
+        db.complete_review(v4_review, "Skipped", "inherited", None, None, None, None)
+            .await?;
+        db.set_review_inherited_from(v4_review, v1_review).await?;
+
+        // v5: a newer clean review on another model.
+        let (v5_ps, v5_patch) = create_series_with_patch_id(&db, "v5", Some(5), diff, pid).await?;
+        let v5_review = complete_clean_review(&db, v5_ps, v5_patch, "flash").await?;
+        db.conn
+            .execute(
+                "UPDATE reviews SET created_at = 2000 WHERE id = ?",
+                libsql::params![v5_review],
+            )
+            .await?;
+
+        // Another series altogether with a different patch id.
+        let (o_ps, o_patch) = create_series_with_patch_id(
+            &db,
+            "other",
+            None,
+            "diff --git a/g.c b/g.c\n+x\n",
+            "fedcba9876543210fedcba9876543210fedcba98",
+        )
+        .await?;
+        complete_clean_review(&db, o_ps, o_patch, "pro").await?;
+
+        // v6 is the patch under review.
+        let (_, v6_patch) = create_series_with_patch_id(&db, "v6", Some(6), diff, pid).await?;
+
+        let found = db
+            .find_clean_review_candidates(pid, v6_patch, 0, 10)
+            .await?;
+        let ids: Vec<(i64, bool)> = found
+            .iter()
+            .map(|c| (c.review_id, c.has_findings))
+            .collect();
+        assert_eq!(
+            ids,
+            vec![(v5_review, false), (v2_review, true), (v1_review, false)]
+        );
+
+        let v1 = found.iter().find(|c| c.review_id == v1_review).unwrap();
+        assert_eq!(v1.patch_id, v1_patch);
+        assert_eq!(v1.patchset_id, v1_ps);
+        assert_eq!(v1.patchset_subject, "v1");
+        assert_eq!(v1.patchset_version, Some(1));
+        assert_eq!(v1.part_index, 1);
+        assert_eq!(v1.diff, diff);
+        assert_eq!(v1.model.as_deref(), Some("pro"));
+        assert_eq!(v1.prompts_hash.as_deref(), Some("p1"));
+        assert_eq!(v1.baseline_commit.as_deref(), Some("abc123"));
+
+        // The age bound and the limit both apply.
+        let recent = db
+            .find_clean_review_candidates(pid, v6_patch, 1500, 10)
+            .await?;
+        assert!(recent.iter().all(|c| c.review_id != v1_review));
+        let one = db.find_clean_review_candidates(pid, v6_patch, 0, 1).await?;
+        assert_eq!(one.len(), 1);
+        assert_eq!(one[0].review_id, v5_review);
+
+        // The patch under review never matches itself.
+        assert!(
+            db.find_clean_review_candidates(pid, v1_patch, 0, 10)
+                .await?
+                .iter()
+                .all(|c| c.patch_id != v1_patch)
+        );
+
+        assert_eq!(
+            db.get_patch_git_patch_id(v6_patch).await?.as_deref(),
+            Some(pid)
         );
         Ok(())
     }
