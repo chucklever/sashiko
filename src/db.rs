@@ -3093,6 +3093,44 @@ impl Database {
             }
         }
 
+        if current_version < 21 {
+            info!("Applying database migration version 21 (review reuse columns)...");
+            let tx = self.begin_immediate_transaction().await?;
+            let locked_version: u32 = {
+                let mut rows = tx.query("PRAGMA user_version", ()).await?;
+                match rows.next().await? {
+                    Some(row) => row.get(0)?,
+                    None => 0,
+                }
+            };
+            if locked_version >= 21 {
+                info!(
+                    "Database already at version {} under the migration lock; skipping version 21.",
+                    locked_version
+                );
+                tx.rollback().await?;
+            } else {
+                // ALTER TABLE ADD COLUMN fails on a column that exists, and a
+                // test that rewinds user_version on a migrated database would
+                // otherwise fail here.
+                let has_inherited_column = {
+                    let mut columns = tx.query("PRAGMA table_info(reviews)", ()).await?;
+                    let mut found = false;
+                    while let Some(row) = columns.next().await? {
+                        let name: String = row.get(1)?;
+                        found |= name == "inherited_from_review_id";
+                    }
+                    found
+                };
+                if !has_inherited_column {
+                    tx.execute_batch(include_str!("migrations/021_review_reuse.sql"))
+                        .await?;
+                }
+                tx.execute("PRAGMA user_version = 21", ()).await?;
+                tx.commit().await?;
+            }
+        }
+
         let has_patchwork_outbox = {
             let mut rows = self
                 .conn
@@ -3111,7 +3149,7 @@ impl Database {
             .await?;
         }
 
-        info!("Database schema is up to date at version 19.");
+        info!("Database schema is up to date at version 21.");
 
         Ok(())
     }
@@ -15836,6 +15874,58 @@ mod tests {
             "message id lookups must seek an index, got: {plan}"
         );
 
+        Ok(())
+    }
+
+    /// The bug schema ships as a single migration, so a fresh database reaches
+    /// the final layout in one step. This pins that migrate is idempotent, that
+    /// it leaves shared infrastructure tables alone, and that the resulting
+    /// Migration 19 adds the review reuse columns and survives being asked
+    /// to run again on a database that already has them.
+    #[tokio::test]
+    async fn test_review_reuse_columns_migrate_idempotently() -> Result<()> {
+        let db = Database::new(&DatabaseSettings {
+            url: ":memory:".into(),
+            token: String::new(),
+        })
+        .await?;
+        db.migrate().await?;
+
+        // A rewound version with the columns present must not fail on the
+        // duplicate ALTER TABLE ADD COLUMN.
+        db.conn.execute("PRAGMA user_version = 18", ()).await?;
+        db.migrate().await?;
+
+        let version: i64 = db
+            .conn
+            .query("PRAGMA user_version", ())
+            .await?
+            .next()
+            .await?
+            .expect("user_version row")
+            .get(0)?;
+        assert_eq!(version, 21);
+
+        let mut columns = db.conn.query("PRAGMA table_info(reviews)", ()).await?;
+        let mut names = std::collections::BTreeSet::new();
+        while let Some(row) = columns.next().await? {
+            names.insert(row.get::<String>(1)?);
+        }
+        assert!(names.contains("inherited_from_review_id"));
+        assert!(names.contains("baseline_commit"));
+
+        let mut index = db
+            .conn
+            .query(
+                "SELECT 1 FROM sqlite_master
+                 WHERE type = 'index' AND name = 'idx_reviews_inherited_from_review_id'",
+                (),
+            )
+            .await?;
+        assert!(
+            index.next().await?.is_some(),
+            "the foreign key column is indexed"
+        );
         Ok(())
     }
 
@@ -29028,7 +29118,7 @@ mod tests {
         let db = setup_db().await;
         let mut rows = db.conn.query("PRAGMA user_version", ()).await.unwrap();
         let version: u32 = rows.next().await.unwrap().unwrap().get(0).unwrap();
-        assert_eq!(version, 20);
+        assert_eq!(version, 21);
 
         for (table, expected_cols) in [
             (
